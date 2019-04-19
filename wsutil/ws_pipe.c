@@ -20,6 +20,7 @@
 #include <io.h>
 #include <fcntl.h> /* for _O_BINARY */
 #include <wsutil/win32-utils.h>
+#include <shlwapi.h>    /* for AssocQueryString */
 #else
 #include <unistd.h>
 #ifdef HAVE_SYS_SELECT_H
@@ -156,6 +157,64 @@ ws_pipe_create_overlapped_read(HANDLE *read_pipe_handle, HANDLE *write_pipe_hand
     g_free(wname);
     return(TRUE);
 }
+
+/**
+ * Lookup the executable associated with given program path. Returns NULL if no
+ * association was found or "%1" if the program can directly be executed.
+ */
+static gchar *
+win32_get_associated_executable(const char *program_path)
+{
+    gchar *interp = NULL;
+    gunichar2 *ext = NULL;
+    const char *dotpos = strrchr(program_path, '.');
+    if (dotpos) {
+        ext = g_utf8_to_utf16(dotpos, -1, NULL, NULL, NULL);
+    }
+    // If this is a script (.py, .js, etc.), find the interpreter.
+    if (ext) {
+        gunichar2 *exe = NULL;
+        DWORD size = 0;
+        if (AssocQueryString(ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, ext, NULL, exe, &size) == S_FALSE) {
+            exe = g_new(gunichar2, size);
+        }
+        if (exe && AssocQueryString(ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, ext, NULL, exe, &size) == S_OK) {
+            interp = g_utf16_to_utf8(exe, -1, NULL, NULL, NULL);
+        }
+        g_free(exe);
+        g_free(ext);
+    }
+    return interp;
+}
+
+/**
+ * Prepends an interpreter program to the command line if needed. Returns TRUE
+ * if the command is executable and FALSE otherwise.
+ */
+static gboolean
+fixup_command(gchar **command_line, const char *command)
+{
+    gchar *interp = win32_get_associated_executable(command);
+    if (!interp) {
+        return FALSE;
+    }
+    // %1 is returned for .bat, .exe, etc. and means that it should be
+    // executed directly without an interpreter.
+    if (!g_str_equal(interp, "%1")) {
+        gchar *quoted_interp = protect_arg(interp);
+        gchar *new_command_line;
+        if (quoted_interp[0] != '"') {
+            new_command_line = g_strdup_printf("\"%s\" %s", quoted_interp, *command_line);
+        } else {
+            new_command_line = g_strdup_printf("%s %s", quoted_interp, *command_line);
+        }
+        g_free(*command_line);
+        *command_line = new_command_line;
+        g_free(quoted_interp);
+    }
+    g_free(interp);
+    return TRUE;
+}
 #endif
 
 /**
@@ -254,6 +313,13 @@ gboolean ws_pipe_spawn_sync(const gchar *working_directory, const gchar *command
     guint64 start_time = g_get_monotonic_time();
 
 #ifdef _WIN32
+    if (!fixup_command(&command_line, command)) {
+        g_free(command_line);
+        g_strfreev(argv);
+        g_log(LOG_DOMAIN_CAPTURE, G_LOG_LEVEL_DEBUG, "No file association found, ignoring program or script");
+        return FALSE;
+    }
+
     /* Setup overlapped structures. Create Manual Reset events, initially not signalled */
     memset(&stdout_overlapped, 0, sizeof(OVERLAPPED));
     memset(&stderr_overlapped, 0, sizeof(OVERLAPPED));
@@ -534,6 +600,13 @@ GPid ws_pipe_spawn_async(ws_pipe_t *ws_pipe, GPtrArray *args)
     g_log(LOG_DOMAIN_CAPTURE, G_LOG_LEVEL_DEBUG, "spawn_async: %s", command_line);
 
 #ifdef _WIN32
+    if (!fixup_command(&command_line, argv[0])) {
+        g_free(command_line);
+        g_strfreev(argv);
+        g_log(LOG_DOMAIN_CAPTURE, G_LOG_LEVEL_DEBUG, "No file association found, ignoring program or script");
+        return WS_INVALID_PID;
+    }
+
     sa.nLength = sizeof(SECURITY_ATTRIBUTES);
     sa.bInheritHandle = TRUE;
     sa.lpSecurityDescriptor = NULL;

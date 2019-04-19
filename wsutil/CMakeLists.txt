@@ -273,7 +273,7 @@ target_link_libraries(wsutil
 )
 
 if(WIN32)
-	target_link_libraries(wsutil PRIVATE "iphlpapi.lib" "ws2_32.lib")
+	target_link_libraries(wsutil PRIVATE "iphlpapi.lib" "ws2_32.lib" "shlwapi.lib")
 endif(WIN32)
 
 target_include_directories(wsutil SYSTEM

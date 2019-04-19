@@ -64,11 +64,17 @@ The extcap subsystem is made of multiple extcap binaries that are automatically
 called by the GUI in a row. In the following chapters we will refer to them as
 "the extcaps".
 
-Extcaps may be any binary or script within the extcap directory. Please note, that
-scripts need to be executable without prefacing a script interpreter before the call.
+Extcaps may be any binary or script within the extcap directory. Please note
+that scripts must be executable (`chmod +x some.py`) and start with an
+appropriate “shebang” line at the beginning of its script (for example,
+`#!/usr/bin/env python3`).
 
-IMPORTANT: *Windows Users* Because of restrictions directly calling the script may not always work.
-In such a case, a batch file may be provided, which then in turn executes the script.
+On Windows, the file extension must be present in the `PATHEXT` environment
+variable and the default file association must be set to the interpreter.
+For Python scripts, you must enable “Install for all users” and “Add Python to
+environment variables” in the Python installer for this to happen.
+If you are not able to get this to work, you may also create a batch file that
+executes the script.
 Please refer to <<ChCaptureExtcapWindowsShell>> for more information.
 
 [[ChCaptureExtcapProcess]]
@@ -202,21 +208,28 @@ the other options are automatically added to run the capture. The extcap interfa
 is used like all other interfaces (meaning that capture on multiple interfaces, as
 well as stopping and restarting the capture is supported).
 
+
 [[ChCaptureExtcapWindowsShell]]
 
 ====== Execute a script-based extcap on Windows
 
-To use scripts on Windows, please generate an <scriptname>.bat inside
-the extcap folder, with the following content (in this case for a Python-based extcap utility):
+Scripts are only executed by Wireshark if their extension is present in the
+`PATHEXT` environment variable, and a file association is correctly configured.
+If you cannot satisfy this requirement, you can workaround this using a batch
+file that calls the original script.
+
+For example, if the Python script is named `sampleif.py`, create `sampleif.bat`
+in the same extcap directory with the following contents:
 
 [source,batch]
 ----
 @echo off
-<Path to python interpreter> <Path to script file> %*
+python %~dpn0.py %*
 ----
 
-Windows is not able to execute most scripts directly (Powershell being an exception), which also goes for all other script-based formats besides VBScript and PowerShell
-
+Replace `python` by the full path if `python.exe` is not in your `PATH`
+environment. `%~dpn0` expands to the concatenation of the drive letter, the
+path, and the file name (without extension) of the invoked batch file.
 
 
 ==== Extcap Arguments
