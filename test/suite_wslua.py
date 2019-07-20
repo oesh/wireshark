@@ -279,6 +279,16 @@ class case_wslua(subprocesstest.SubprocessTestCase):
         '''wslua tvb without a tree'''
         check_lua_script(self, 'tvb.lua', dns_port_pcap, True)
 
+    def test_wslua_call_dissector(self, check_lua_script):
+        '''Verifies that many repeated dissector calls poses no issue.'''
+        check_lua_script(self, 'dissector_calls.lua', 'ntp.pcap', True, '-V',
+                '--disable-protocol', 'test.disable')
+
+    def test_wslua_call_dissector_no_tree(self, check_lua_script):
+        '''Verifies that many repeated dissector calls poses no issue.'''
+        check_lua_script(self, 'dissector_calls.lua', 'ntp.pcap', True,
+                '--disable-protocol', 'test.disable')
+
 
 @fixtures.uses_fixtures
 class case_wslua_unicode(subprocesstest.SubprocessTestCase):

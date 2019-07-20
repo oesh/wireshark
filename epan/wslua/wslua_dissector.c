@@ -96,7 +96,7 @@ WSLUA_METHOD Dissector_call(lua_State* L) {
     if (! ( d && tvb && pinfo) ) return 0;
 
     TRY {
-        len = call_dissector(d, tvb->ws_tvb, pinfo->ws_pinfo, ti->tree);
+        len = call_dissector_only(d, tvb->ws_tvb, pinfo->ws_pinfo, ti->tree, NULL);
         /* XXX Are we sure about this??? is this the right/only thing to catch */
     } CATCH_NONFATAL_ERRORS {
         show_exception(tvb->ws_tvb, pinfo->ws_pinfo, ti->tree, EXCEPT_CODE, GET_MESSAGE);
@@ -105,8 +105,15 @@ WSLUA_METHOD Dissector_call(lua_State* L) {
 
     if (error) { WSLUA_ERROR(Dissector_call,error); }
 
+#if 0
+    // Not sure if the dissector would have accepted the data, so display the data unconditionally.
+    if (len == 0 && !proto_is_protocol_enabled(find_protocol_by_id(dissector_handle_get_protocol_index(d)))) {
+        len = call_data_dissector(tvb->ws_tvb, pinfo->ws_pinfo, ti->tree);
+    }
+#endif
+
     lua_pushnumber(L,(lua_Number)len);
-    WSLUA_RETURN(1); /* Number of bytes dissected.  Note that some dissectors always return number of bytes in incoming buffer, so be aware. */
+    WSLUA_RETURN(1); /* Number of bytes dissected or 0 if a dissector was disabled or rejected the data.  Note that some dissectors always return number of bytes in incoming buffer, so be aware. */
 }
 
 WSLUA_METAMETHOD Dissector__call(lua_State* L) {
