@@ -287,6 +287,7 @@ class case_wslua(subprocesstest.SubprocessTestCase):
     def test_wslua_call_dissector_no_tree(self, check_lua_script):
         '''Verifies that many repeated dissector calls poses no issue.'''
         check_lua_script(self, 'dissector_calls.lua', 'ntp.pcap', True,
+                '-Xlua_script1:disable_accept_test',
                 '--disable-protocol', 'test.disable')
 
 

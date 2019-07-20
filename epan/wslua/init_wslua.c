@@ -179,8 +179,7 @@ int dissect_lua(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void* data 
 
         push_Tvb(L,tvb);
         push_Pinfo(L,pinfo);
-        lua_tree = push_TreeItem(L, tree, proto_tree_add_item(tree, hf_wslua_fake, tvb, 0, 0, ENC_NA));
-        proto_item_set_hidden(lua_tree->item);
+        lua_tree = push_TreeItem_delayed(L, tree, hf_wslua_fake, tvb);
 
         if  ( lua_pcall(L,3,1,0) ) {
             proto_tree_add_expert_format(tree, pinfo, &ei_lua_error, tvb, 0, 0, "Lua Error: %s", lua_tostring(L,-1));
@@ -278,8 +277,7 @@ gboolean heur_dissect_lua(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, v
 
     push_Tvb(L,tvb);
     push_Pinfo(L,pinfo);
-    lua_tree = push_TreeItem(L, tree, proto_tree_add_item(tree, hf_wslua_fake, tvb, 0, 0, ENC_NA));
-    proto_item_set_hidden(lua_tree->item);
+    lua_tree = push_TreeItem_delayed(L, tree, hf_wslua_fake, tvb);
 
     if  ( lua_pcall(L,3,1,0) ) {
         proto_tree_add_expert_format(tree, pinfo, &ei_lua_error, tvb, 0, 0,

@@ -28,7 +28,7 @@ static GPtrArray* outstanding_TreeItem = NULL;
 
 /* pushing a TreeItem with a NULL item or subtree is completely valid for this function */
 TreeItem push_TreeItem(lua_State *L, proto_tree *tree, proto_item *item) {
-    TreeItem ti = (struct _wslua_treeitem *)g_malloc(sizeof(struct _wslua_treeitem));
+    TreeItem ti = g_new0(struct _wslua_treeitem, 1);
 
     ti->tree = tree;
     ti->item = item;
@@ -39,10 +39,45 @@ TreeItem push_TreeItem(lua_State *L, proto_tree *tree, proto_item *item) {
     return *(pushTreeItem(L,ti));
 }
 
+static proto_item * wslua_get_tree_item(TreeItem ti); // XXX delme testing
+TreeItem push_TreeItem_delayed(lua_State *L, proto_tree *tree, int hf_id, tvbuff_t *tvb) {
+    TreeItem ti = g_new0(struct _wslua_treeitem, 1);
+
+    ti->tree = tree;
+    ti->delayed = g_new0(wslua_delayed_treeitem, 1);
+    ti->delayed->hf_id = hf_id;
+    ti->delayed->tvb = tvb;
+
+    g_ptr_array_add(outstanding_TreeItem, ti);
+
+    //wslua_get_tree_item(ti); // XXX delme testing
+
+    return *(pushTreeItem(L,ti));
+}
+
+static proto_item *
+wslua_get_tree_item(TreeItem ti)
+{
+    if (!ti) {
+        return NULL;
+    }
+
+    wslua_delayed_treeitem *spec = ti->delayed;
+    if (spec) {
+        proto_item *item = proto_tree_add_item(ti->tree, spec->hf_id, spec->tvb, 0, 0, ENC_NA);
+        proto_item_set_hidden(item);
+        g_free(spec);
+        ti->item = item;
+        ti->delayed = NULL;
+    }
+
+    return ti->item;
+}
+
 /* creates the TreeItem but does NOT push it into Lua */
 TreeItem create_TreeItem(proto_tree* tree, proto_item* item)
 {
-    TreeItem tree_item = (TreeItem)g_malloc(sizeof(struct _wslua_treeitem));
+    TreeItem tree_item = g_new0(struct _wslua_treeitem, 1);
     tree_item->tree = tree;
     tree_item->item = item;
     tree_item->expired = FALSE;
@@ -549,9 +584,10 @@ static int TreeItem_get_text(lua_State* L) {
     TreeItem ti = checkTreeItem(L,1);
     gchar label_str[ITEM_LABEL_LENGTH+1];
     gchar *label_ptr;
+    proto_item *item = wslua_get_tree_item(ti);
 
-    if (ti->item) {
-        field_info *fi = PITEM_FINFO(ti->item);
+    if (item) {
+        field_info *fi = PITEM_FINFO(item);
 
         if (!fi->rep) {
             label_ptr = label_str;
@@ -581,7 +617,7 @@ WSLUA_METHOD TreeItem_set_text(lua_State *L) {
     TreeItem ti = checkTreeItem(L,1);
     const gchar* s = luaL_checkstring(L,WSLUA_ARG_TreeItem_set_text_TEXT);
 
-    proto_item_set_text(ti->item,"%s",s);
+    proto_item_set_text(wslua_get_tree_item(ti), "%s", s);
 
     /* copy the TreeItem userdata so we give it back */
     lua_pushvalue(L, 1);
@@ -598,7 +634,7 @@ WSLUA_METHOD TreeItem_append_text(lua_State *L) {
     TreeItem ti = checkTreeItem(L,1);
     const gchar* s = luaL_checkstring(L,WSLUA_ARG_TreeItem_append_text_TEXT);
 
-    proto_item_append_text(ti->item,"%s",s);
+    proto_item_append_text(wslua_get_tree_item(ti), "%s", s);
 
     /* copy the TreeItem userdata so we give it back */
     lua_pushvalue(L, 1);
@@ -615,7 +651,7 @@ WSLUA_METHOD TreeItem_prepend_text(lua_State *L) {
     TreeItem ti = checkTreeItem(L,1);
     const gchar* s = luaL_checkstring(L,WSLUA_ARG_TreeItem_prepend_text_TEXT);
 
-    proto_item_prepend_text(ti->item,"%s",s);
+    proto_item_prepend_text(wslua_get_tree_item(ti), "%s", s);
 
     /* copy the TreeItem userdata so we give it back */
     lua_pushvalue(L, 1);
@@ -645,12 +681,13 @@ WSLUA_METHOD TreeItem_add_expert_info(lua_State *L) {
     int severity          = (int)luaL_optinteger(L,WSLUA_OPTARG_TreeItem_add_expert_info_SEVERITY,PI_CHAT);
     expert_field* ei_info = wslua_get_expert_field(group, severity);
     const gchar* str;
+    proto_item *item = wslua_get_tree_item(ti);
 
     if (lua_gettop(L) >= WSLUA_OPTARG_TreeItem_add_expert_info_TEXT) {
         str = wslua_checkstring_only(L, WSLUA_OPTARG_TreeItem_add_expert_info_TEXT);
-        expert_add_info_format(lua_pinfo, ti->item, ei_info, "%s", str);
+        expert_add_info_format(lua_pinfo, item, ei_info, "%s", str);
     } else {
-        expert_add_info(lua_pinfo, ti->item, ei_info);
+        expert_add_info(lua_pinfo, item, ei_info);
     }
 
     /* copy the TreeItem userdata so we give it back */
@@ -671,6 +708,7 @@ WSLUA_METHOD TreeItem_add_proto_expert_info(lua_State *L) {
     TreeItem ti = checkTreeItem(L,1);
     ProtoExpert expert = checkProtoExpert(L,WSLUA_ARG_TreeItem_add_proto_expert_info_EXPERT);
     const gchar* str;
+    proto_item *item = wslua_get_tree_item(ti);
 
     if (expert->ids.ei == EI_INIT_EI || expert->ids.hf == EI_INIT_HF) {
         luaL_error(L, "ProtoExpert is not registered");
@@ -679,9 +717,9 @@ WSLUA_METHOD TreeItem_add_proto_expert_info(lua_State *L) {
 
     if (lua_gettop(L) >= WSLUA_OPTARG_TreeItem_add_proto_expert_info_TEXT) {
         str = wslua_checkstring_only(L, WSLUA_OPTARG_TreeItem_add_proto_expert_info_TEXT);
-        expert_add_info_format(lua_pinfo, ti->item, &expert->ids, "%s", str);
+        expert_add_info_format(lua_pinfo, item, &expert->ids, "%s", str);
     } else {
-        expert_add_info(lua_pinfo, ti->item, &expert->ids);
+        expert_add_info(lua_pinfo, item, &expert->ids);
     }
 
     /* copy the TreeItem userdata so we give it back */
@@ -767,7 +805,7 @@ static int TreeItem_get_visible(lua_State* L) {
 static int TreeItem_get_generated(lua_State* L) {
     TreeItem ti = checkTreeItem(L,1);
 
-    lua_pushboolean(L, proto_item_is_generated(ti->item));
+    lua_pushboolean(L, proto_item_is_generated(wslua_get_tree_item(ti)));
 
     return 1;
 }
@@ -783,12 +821,13 @@ WSLUA_METHOD TreeItem_set_generated(lua_State *L) {
                                                       generated flag, else clears it (default=true) */
     TreeItem ti = checkTreeItem(L,1);
     gboolean set = wslua_optbool(L, WSLUA_OPTARG_TreeItem_set_generated_BOOL, TRUE);
+    proto_item *item = wslua_get_tree_item(ti);
 
     if (set) {
-        proto_item_set_generated(ti->item);
+        proto_item_set_generated(item);
     } else {
-        if (ti->item)
-            FI_RESET_FLAG(PITEM_FINFO(ti->item), FI_GENERATED);
+        if (item)
+            FI_RESET_FLAG(PITEM_FINFO(item), FI_GENERATED);
     }
 
     /* copy the TreeItem userdata so we give it back */
@@ -804,7 +843,7 @@ WSLUA_METHOD TreeItem_set_generated(lua_State *L) {
 static int TreeItem_get_hidden(lua_State* L) {
     TreeItem ti = checkTreeItem(L,1);
 
-    lua_pushboolean(L, proto_item_is_hidden(ti->item));
+    lua_pushboolean(L, proto_item_is_hidden(wslua_get_tree_item(ti)));
 
     return 1;
 }
@@ -820,11 +859,12 @@ WSLUA_METHOD TreeItem_set_hidden(lua_State *L) {
                                                       hidden flag, else clears it (default=true) */
     TreeItem ti = checkTreeItem(L,1);
     gboolean set = wslua_optbool(L, WSLUA_OPTARG_TreeItem_set_hidden_BOOL, TRUE);
+    proto_item *item = wslua_get_tree_item(ti);
 
     if (set) {
-        proto_item_set_hidden(ti->item);
+        proto_item_set_hidden(item);
     } else {
-        proto_item_set_visible(ti->item);
+        proto_item_set_visible(item);
     }
 
     /* copy the TreeItem userdata so we give it back */
@@ -842,7 +882,7 @@ static int TreeItem_get_len(lua_State* L) {
     int len = 0;
 
     /* XXX - this is *NOT* guaranteed to return a correct value! */
-    len = proto_item_get_len(ti->item);
+    len = proto_item_get_len(wslua_get_tree_item(ti));
 
     lua_pushinteger(L, len > 0 ? len : 0);
 
@@ -858,7 +898,7 @@ WSLUA_METHOD TreeItem_set_len(lua_State *L) {
     TreeItem ti = checkTreeItem(L,1);
     gint len = (int)luaL_checkinteger(L,WSLUA_ARG_TreeItem_set_len_LEN);
 
-    proto_item_set_len(ti->item, len);
+    proto_item_set_len(wslua_get_tree_item(ti), len);
 
     /* copy the TreeItem userdata so we give it back */
     lua_pushvalue(L, 1);
@@ -906,11 +946,12 @@ WSLUA_METAMETHOD TreeItem__tostring(lua_State* L) {
 
     if (ti) {
         lua_pushfstring(L,
-            "TreeItem: expired=%s, has item=%s, has subtree=%s, they are %sthe same",
+            "TreeItem: expired=%s, has item=%s, has subtree=%s, %s",
             ti->expired ? "true" : "false",
             ti->item ? "true" : "false",
             ti->tree ? "true" : "false",
-            (ti->tree == ti->item) ? "" : "not ");
+            ti->delayed ? "delayed creation" :
+            (ti->tree == ti->item ? "they are the same" : "they are not the same"));
     }
     else {
         lua_pushstring(L, "No TreeItem object!");
@@ -923,6 +964,10 @@ WSLUA_METAMETHOD TreeItem__tostring(lua_State* L) {
 static int TreeItem__gc(lua_State* L) {
     TreeItem ti = toTreeItem(L,1);
     if (!ti) return 0;
+    if (ti->delayed) {
+        g_free(ti->delayed);
+        ti->delayed = NULL;
+    }
     if (!ti->expired)
         ti->expired = TRUE;
     else

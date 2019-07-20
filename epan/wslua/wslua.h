@@ -212,10 +212,16 @@ struct _wslua_private_table {
     gboolean expired;
 };
 
+typedef struct _wslua_delayed_treeitem {
+    int hf_id;
+    tvbuff_t *tvb;
+} wslua_delayed_treeitem;
+
 struct _wslua_treeitem {
     proto_item* item;
     proto_tree* tree;
     gboolean expired;
+    wslua_delayed_treeitem *delayed;
 };
 
 // Internal structure for wslua_field.c to track info about registered fields.
@@ -779,6 +785,7 @@ extern void clear_outstanding_PrivateTable(void);
 
 extern int get_hf_wslua_text(void);
 extern TreeItem push_TreeItem(lua_State *L, proto_tree *tree, proto_item *item);
+extern TreeItem push_TreeItem_delayed(lua_State *L, proto_tree *tree, int hf_id, tvbuff_t *tvb);
 extern void clear_outstanding_TreeItem(void);
 
 extern FieldInfo* push_FieldInfo(lua_State *L, field_info* f);
