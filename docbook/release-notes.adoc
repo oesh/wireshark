@@ -78,8 +78,8 @@ since version 3.0.0:
 [commaize]
 --
 3GPP BICC MST (BICC-MST)
-3GPP/GSM Cell Broadcast Service Protocol (cbsp)
 3GPP log packet (LOG3GPP)
+3GPP/GSM Cell Broadcast Service Protocol (cbsp)
 Bluetooth Mesh Beacon
 Bluetooth Mesh PB-ADV
 Bluetooth Mesh Provisioning PDU
@@ -97,13 +97,14 @@ File Server Remote VSS Protocol (FSRVP)
 FTDI FT USB Bridging Devices (FTDI FT)
 Graylog Extended Log Format over UDP (GELF)
 GSM/3GPP CBSP (Cell Broadcast Service Protocol)
+Hypertext Transfer Protocol Version 3 (HTTP/3)
+Linux net_dm (network drop monitor) protocol
 MIDI System Exclusive DigiTech (SYSEX DigiTech)
 Network Controller Sideband Interface (NCSI)
 NR Positioning Protocol A (NRPPa) TS 38.455
 NVM Express over Fabrics for TCP (nvme-tcp)
 OsmoTRX Protocol (GSM Transceiver control and data)
 Scalable service-Oriented MiddlewarE over IP (SOME/IP)
-Linux net_dm (network drop monitor) protocol
 --
 
 === Updated Protocol Support
