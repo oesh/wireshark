@@ -10,7 +10,7 @@ function run_scaffold() {
 	else 
 		mkdir -p ${TEST_OUTPUT_DIR}
 		echo "r: ${TSHARK} $@"
-		${TSHARK} "$@" > ${TSHARK_OUTPUT_FILE}
+		${TSHARK} "$@" | tee ${TSHARK_OUTPUT_FILE}
 	fi
 }
 
