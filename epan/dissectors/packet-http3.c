@@ -65,7 +65,7 @@ static const val64_string http3_stream_types[] = {
 };
 
 /*
- * https://tools.ietf.org/html/draft-ietf-quic-http-23#section-11.3
+ * https://tools.ietf.org/html/draft-ietf-quic-http-29#section-7
  * 62-bit space.
  */
 static const val64_string http3_frame_types[] = {
@@ -81,7 +81,7 @@ static const val64_string http3_frame_types[] = {
     { 0x08, "Reserved" },
     { 0x09, "Reserved" },
     { 0x0d, "MAX_PUSH_ID" },
-    { 0x0e, "DUPLICATE_PUSH" },
+    { 0x0e, "DUPLICATE_PUSH" }, /**< Has been removed in draft-ietf-quic-http-26. */
     /* 0x40 - 0x3fff Assigned via Specification Required policy */
     /* 0x4000 - 0x3FFFFFFFFFFFFFFF Private Use */
     { 0, NULL }
