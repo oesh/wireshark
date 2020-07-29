@@ -1,0 +1,18 @@
+Set up the repository
+
+
+- upstream - oesh
+- public - read-only copy 
+
+when using homebrew setup, ensure that the homebrew/bin is ahead of the /usr/local/bin in path. 
+
+
+Environment setup:
+
+1. use tools/macos-setup-brew.sh
+
+2. mkdir build ; cd build ; cmake .. -G Ninja -DBUILD_wireshark=OFF -DBUILD_tshark=ON -DCMAKE_BUILD_TYPE=Debug
+
+3. build with ninja
+
+
