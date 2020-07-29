@@ -565,6 +565,9 @@ else() # ! MSVC
 		-Wheader-guard
 		-Wcomma
 		-Wshorten-64-to-32
+		-Wno-nullability-completeness
+		-Wno-c++-compat
+		-Wno-vla
 	)
 
 	#

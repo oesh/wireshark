@@ -2,13 +2,15 @@
 SCAFFOLD_NAME=$(basename $0)
 function run_scaffold() {
 	if echo ${SCAFFOLD_NAME} | grep "debug" ; then
+		mkdir -p ${TEST_OUTPUT_DIR}
 		echo "d: lldb ${TSHARK} -- $@"
 		lldb ${TSHARK} -- "$@"
 	elif echo ${SCAFFOLD_NAME} | grep "verify" ; then 
-		echo "v: ${TSHARK} $@"	
+		echo "v: ${TSHARK} $@"
 	else 
-		echo "r: ${TSHARK} $@"	
-		${TSHARK} "$@"
+		mkdir -p ${TEST_OUTPUT_DIR}
+		echo "r: ${TSHARK} $@"
+		${TSHARK} "$@" > ${TSHARK_OUTPUT_FILE}
 	fi
 }
 
@@ -41,11 +43,14 @@ else
 	exit 3
 fi
 
-LOGDIR="$(pwd)/logs"
-mkdir -p ${LOGDIR}
+TEST_OUTPUT_DIR=$(pwd)/logs/${TESTNAME}/$(date "+%Y%m%d%H%M%S")
 
-TLS_DEBUG_FILE=$(mktemp ${LOGDIR}/${TESTNAME}.tls.debug.log.XXXX)
+
+TLS_DEBUG_FILE=${TEST_OUTPUT_DIR}/tls.debug.log
         echo "TLS debug log:        ${TLS_DEBUG_FILE}"
+	
+TSHARK_OUTPUT_FILE=${TEST_OUTPUT_DIR}/tshark.output
+        echo "Tshark output:        ${TSHARK_OUTPUT_FILE}"
 	
 TSHARK=../build/run/tshark
 if [ -x "${TSHARK}" ] ; then 
