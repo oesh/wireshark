@@ -39,8 +39,8 @@ static gint ett_http3 = -1;
 
 /**
  * Unidirectional stream types.
- * https://tools.ietf.org/html/draft-ietf-quic-http-23#section-11.6
- * https://tools.ietf.org/html/draft-ietf-quic-qpack-10#section-4.2
+ * https://tools.ietf.org/html/draft-ietf-quic-http-29#section-6.2
+ * https://tools.ietf.org/html/draft-ietf-quic-qpack-16#section-4.2
  */
 enum http3_stream_type {
     HTTP3_STREAM_TYPE_CONTROL,
@@ -51,7 +51,7 @@ enum http3_stream_type {
 
 /*
  * Unidirectional stream types (62-bit code space).
- * https://tools.ietf.org/html/draft-ietf-quic-http-23#section-11.3
+ * https://tools.ietf.org/html/draft-ietf-quic-http-29#section-6.2
  */
 static const val64_string http3_stream_types[] = {
     /* 0x00 - 0x3f Assigned via Standards Action or IESG Review policies. */
