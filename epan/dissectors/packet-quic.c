@@ -1066,6 +1066,23 @@ process_quic_stream(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *t
     }
 }
 
+static guint32 get_reassembly_id(struct tcp_multisegment_pdu *msp, quic_stream_info *stream_info) {
+    if (msp && stream_info) {
+        // A single stream can contain multiple fragments (e.g. for HTTP/3
+        // HEADERS and DATA frames). Let's hope that a single stream within a
+        // QUIC packet does not contain multiple partial fragments, that would
+        // result in a reassembly ID collision here. If that collision becomes
+        // an issue, we would have to replace "msp->first_frame" with a new
+        // field in "msp" that is initialized with "stream_info->stream_offset".
+        guint64 reassembly_id_data[2];
+        reassembly_id_data[0] = stream_info->stream_id;
+        reassembly_id_data[1] = msp->first_frame;
+        return wmem_strong_hash((const guint8 *)&reassembly_id_data, sizeof(reassembly_id_data));
+    } else {
+        return 0;
+    }
+}
+
 /**
  * Reassemble stream data within a STREAM frame.
  */
@@ -1119,26 +1136,14 @@ again:
     if ((msp = (struct tcp_multisegment_pdu *)wmem_tree_lookup32(stream->multisegment_pdus, seq)) &&
             nxtseq <= msp->nxtpdu) {
         // TODO show expert info for retransmission?
-        proto_tree_add_debug_text(tree, "TODO retransmission expert info frame %d stream_id=%" G_GINT64_MODIFIER "u offset=%d visited=%d reassembly_id=0x%08x",
+        proto_tree_add_debug_text(tree,
+                "TODO retransmission expert info frame %d stream_id=%" G_GINT64_MODIFIER "u offset=%d visited=%d reassembly_id=0x%08x",
                 pinfo->num, stream->stream_id, offset, PINFO_FD_VISITED(pinfo), reassembly_id);
         return;
     }
     /* Else, find the most previous PDU starting before this sequence number */
     if (!msp && seq > 0) {
         msp = (struct tcp_multisegment_pdu *)wmem_tree_lookup32_le(stream->multisegment_pdus, seq-1);
-    }
-
-    if (msp) {
-        // A single stream can contain multiple fragments (e.g. for HTTP/3
-        // HEADERS and DATA frames). Let's hope that a single stream within a
-        // QUIC packet does not contain multiple partial fragments, that would
-        // result in a reassembly ID collision here. If that collision becomes
-        // an issue, we would have to replace "msp->first_frame" with a new
-        // field in "msp" that is initialized with "stream_info->stream_offset".
-        guint64 reassembly_id_data[2];
-        reassembly_id_data[0] = stream_info->stream_id;
-        reassembly_id_data[1] = msp->first_frame;
-        reassembly_id = wmem_strong_hash((const guint8 *)&reassembly_id_data, sizeof(reassembly_id_data));
     }
 
     if (msp && msp->seq <= seq && msp->nxtpdu > seq) {
@@ -1160,6 +1165,7 @@ again:
         }
         last_fragment_len = len;
 
+        reassembly_id = get_reassembly_id(msp, stream_info);
         fh = fragment_add(&quic_reassembly_table, tvb, offset,
                           pinfo, reassembly_id, NULL,
                           seq - msp->seq, len,
@@ -1241,6 +1247,7 @@ again:
             process_quic_stream(next_tvb, 0, pinfo, tree, quic_info, stream_info);
             called_dissector = TRUE;
 
+            reassembly_id = get_reassembly_id(msp, stream_info);
             int old_len = (int)(tvb_reported_length(next_tvb) - last_fragment_len);
             if (pinfo->desegment_len &&
                 pinfo->desegment_offset <= old_len) {
@@ -1341,6 +1348,7 @@ again:
             }
 
             /* add this segment as the first one for this new pdu */
+            reassembly_id = get_reassembly_id(msp, stream_info);
             fragment_add(&quic_reassembly_table, tvb, deseg_offset,
                          pinfo, reassembly_id, NULL,
                          0, nxtseq - deseg_seq,
