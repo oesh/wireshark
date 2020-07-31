@@ -86,6 +86,25 @@ class case_dissect_http2(subprocesstest.SubprocessTestCase):
 
 @fixtures.mark_usefixtures('test_env')
 @fixtures.uses_fixtures
+class case_dissect_http3(subprocesstest.SubprocessTestCase):
+    def test_http3_metadata_streams(self, cmd_tshark, features, dirs, capture_file):
+        '''Dissection of HTTP3 metadata streams'''
+        self.assertRun((cmd_tshark,
+                '-r', capture_file('http3-basic.pcapng'),
+                '-d', 'udp.port==443,http3',
+                '-V'
+            ))
+        # HTTP3 metadata streams:
+        #   0x0 - control
+        #   0x2 - QPACK Encoder
+        #   0x3 - QPACK Decoder
+        self.assertTrue(self.grepOutput('Stream Type: Control Stream (0x0000000000000000)'))
+        self.assertTrue(self.grepOutput('Stream Type: QPACK Encoder Stream (0x0000000000000002)'))
+        self.assertTrue(self.grepOutput('Stream Type: QPACK Decoder Stream (0x0000000000000003)'))
+
+
+@fixtures.mark_usefixtures('test_env')
+@fixtures.uses_fixtures
 class case_dissect_tcp(subprocesstest.SubprocessTestCase):
     def check_tcp_out_of_order(self, cmd_tshark, dirs, extraArgs=[]):
         capture_file = os.path.join(dirs.capture_dir, 'http-ooo.pcap')
