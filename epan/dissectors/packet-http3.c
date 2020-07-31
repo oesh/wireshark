@@ -178,7 +178,7 @@ dissect_http3_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int off
 
     if (frame_length) {
         proto_tree_add_item(tree, hf_http3_frame_payload, tvb, offset, (int)frame_length, ENC_NA);
-        offset += frame_length;
+        offset += (int)frame_length;
     }
 
     return offset;
