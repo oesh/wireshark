@@ -1145,6 +1145,9 @@ ws_find_package(ZSTD ENABLE_ZSTD HAVE_ZSTD "1.0.0")
 # Enhanced HTTP/2 dissection
 ws_find_package(NGHTTP2 ENABLE_NGHTTP2 HAVE_NGHTTP2)
 
+# Enhanced HTTP/3 dissection
+ws_find_package(NGHTTP3 ENABLE_NGHTTP3 HAVE_NGHTTP3)
+
 # Embedded Lua interpreter
 ws_find_package(LUA ENABLE_LUA HAVE_LUA "5.1")
 
@@ -1627,6 +1630,11 @@ set_package_properties(NGHTTP2 PROPERTIES
 	DESCRIPTION "HTTP/2 C library and tools"
 	URL "https://nghttp2.org"
 	PURPOSE "Header decompression in HTTP2"
+)
+set_package_properties(NGHTTP3 PROPERTIES
+    DESCRIPTION "HTTP/3 C library and tools"
+    URL "https://ngtcp2.org"
+    PURPOSE "Header decompression in HTTP3"
 )
 set_package_properties(CARES PROPERTIES
 	DESCRIPTION "Library for asynchronous DNS requests"
@@ -3028,6 +3036,9 @@ if(RPMBUILD_EXECUTABLE)
 	if (NGHTTP2_FOUND)
 		list(APPEND _rpmbuild_with_args --with nghttp2)
 	endif()
+    if (NGHTTP3_FOUND)
+        list(APPEND _rpmbuild_with_args --with nghttp3)
+    endif()
 	if (SYSTEMD_FOUND)
 		list(APPEND _rpmbuild_with_args --with sdjournal)
 	endif()
