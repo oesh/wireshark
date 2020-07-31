@@ -110,6 +110,21 @@ While stream data availalbe:
        Continue to execute the reading loop.
 ```
 
+#### Testing the QUIC stream reassembly 
+
+To test for correct reassembly we can use the following fields:
+- `quic.fragments`, which marks that a reassembly has been completed
+- `quic.fragment.count`, which reports the number of fragments that have been reassembled
+- `quic.reassembled.length`, which shows the size of the reassembled PDU. 
+
+Note that the two last fields should only be set when the reassembly has happened. This allows running the following tests:
+
+1. `quic.fragments => quic.fragment.count > 1` - more than one fragment required for reassembly
+2. `quic.fragments => quic.reassembled.length > 1` - if the segment has reassembled data, the reassembled PDU must have non-zero length
+
+In addition, the following filters should produce zero results:
+1. `not quic.fragments && quic.fragment.count > 0`
+2. `not quic.fragments && quic.reassembled.length > 0`
 
 ### HTTP3 data reassembly 
 

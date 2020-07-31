@@ -84,6 +84,35 @@ class case_dissect_http2(subprocesstest.SubprocessTestCase):
         self.assertTrue(self.grepOutput('00000000  00 00 2c 01 05 00 00 00'))
 
 
+
+@fixtures.mark_usefixtures('test_env')
+@fixtures.uses_fixtures
+class case_dissect_quic(subprocesstest.SubprocessTestCase):
+    def test_quic_fragmented_pdus_are_reassembled(self, cmd_tshark, features, dirs, capture_file):
+        '''Reassembly of (HTTP3) PDU fragments in QUIC stream'''
+        self.assertRun((cmd_tshark,
+                '-r', capture_file('http3-basic.pcapng'),
+                '-Tfields',  
+                '-e', 'quic.reassembled.length', '-e', 'quic.fragment.count',
+                '-Y', 'quic.fragments'
+            ))
+        # If a packet is marked as containing the end of fragmented PDU,
+        # it must have both `quic.reassembled.length` and `quic.fragment.count` set.
+        self.assertTrue(self.grepOutput('\S+\s+\S+'))
+
+    def test_quic_reassembled_pdus_are_fragmented(self, cmd_tshark, features, dirs, capture_file):
+        '''Reassembly of (HTTP3) PDU fragments in QUIC stream'''
+        self.assertRun((cmd_tshark,
+                '-r', capture_file('http3-basic.pcapng'),
+                '-Tfields',  
+                '-e', 'quic.fragments',
+                '-Y', 'quic.reassembled.length > 0 || quic.fragment.count > 0'
+            ))
+        # If a packet has a length of a reassembled PDU or a fragment count set,
+        # it must have been fragmented.
+        self.assertTrue(self.grepOutput('1'))
+
+@fixtures.mark_usefixtures('test_env')
 @fixtures.mark_usefixtures('test_env')
 @fixtures.uses_fixtures
 class case_dissect_http3(subprocesstest.SubprocessTestCase):
@@ -91,16 +120,14 @@ class case_dissect_http3(subprocesstest.SubprocessTestCase):
         '''Dissection of HTTP3 metadata streams'''
         self.assertRun((cmd_tshark,
                 '-r', capture_file('http3-basic.pcapng'),
-                '-d', 'udp.port==443,http3',
-                '-V'
+                '-Tfields',
+                '-e', 'http3.stream_type'
             ))
-        # HTTP3 metadata streams:
-        #   0x0 - control
-        #   0x2 - QPACK Encoder
-        #   0x3 - QPACK Decoder
-        self.assertTrue(self.grepOutput('Stream Type: Control Stream (0x0000000000000000)'))
-        self.assertTrue(self.grepOutput('Stream Type: QPACK Encoder Stream (0x0000000000000002)'))
-        self.assertTrue(self.grepOutput('Stream Type: QPACK Decoder Stream (0x0000000000000003)'))
+        # HTTP3 metadata streams should be created in the same QUIC segment.
+        #   0 - control
+        #   2 - QPACK Encoder
+        #   3 - QPACK Decoder
+        self.assertTrue(self.grepOutput('0,2,3'))
 
 
 @fixtures.mark_usefixtures('test_env')
