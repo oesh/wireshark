@@ -1,18 +1,18 @@
-# Design notes on the HTTP3 dissector for wireshark 
+# Design notes on the HTTP3 dissector for wireshark
 
 
 
-# Goals 
+# Goals
 
 1. Adding ability to analyze HTTP3 headers with Wireshark.
 2. Adding ability to analyze all frames except for the HTTP DATA frames.
 3. Adding abilitty to analyze the HTTP3 DATA frames.
 
-# Timeline 
+# Timeline
 
-The work is being sponsored by Facebook and therefore needs to meet the internal timelines/needs of FB. 
+The work is being sponsored by Facebook and therefore needs to meet the internal timelines/needs of FB.
 
-## Goal 1 timeline 
+## Goal 1 timeline
 
 I have been given 10 days worth of work in July/early August to work on:
 
@@ -23,46 +23,46 @@ I have been given 10 days worth of work in July/early August to work on:
 5. HTTP3 HEADER dissection.
 
 
-## Goal 2 timeline 
+## Goal 2 timeline
 
 Possibly in the second half of 2020, no specific time allocated.
 
 1. SETTINGS frame
 3. PUSH PROMISE / MAX PUSH ID / CANCEL PUSH frames
 
-## Goal 3 timeline 
+## Goal 3 timeline
 
 Possibly in the second half of 2020, no specific time allocated.
 
 1. Solving the memory considerations for the large PDUs.
 2. Solving the question of sub-dissectors for the HTTP3 payloads.
 
-# Design considerations 
+# Design considerations
 
 ## High level control flow
 
 ```
-       +------------------+                                              
-       |  dissect_http3   |                                              
-       +------------------+                                              
-                 |                                                       
-                 |                                                       
-                 v                                                       
-         +---------------+                                               
-         |dissect_stream |                                               
-         +---------------+                                               
-                 |                                                       
-                 |      +------------------------+                       
-                 +----->| dissect_control_stream |--+                    
-                 |      +------------------------+  |                    
-                 |      +------------------------+  |                    
-                 +----->|  dissect_data_stream   |--+                    
-                 |      +------------------------+  |                    
-                 |                                  v                    
-                 |                         +----------------+            
-                 |                         | dissect_frame  |            
-                 |                         +----------------+            
-                 |                                  |                    
+       +------------------+                                             
+       |  dissect_http3   |                                             
+       +------------------+                                             
+                 |                                                      
+                 |                                                      
+                 v                                                      
+         +---------------+                                              
+         |dissect_stream |                                              
+         +---------------+                                              
+                 |                                                      
+                 |      +------------------------+                      
+                 +----->| dissect_control_stream |--+                   
+                 |      +------------------------+  |                   
+                 |      +------------------------+  |                   
+                 +----->|  dissect_data_stream   |--+                   
+                 |      +------------------------+  |                   
+                 |                                  v                   
+                 |                         +----------------+           
+                 |                         | dissect_frame  |           
+                 |                         +----------------+           
+                 |                                  |                   
                  |                                  |  +----------------+
                  |                                  +->|  dissect_data  |
                  |                                  |  +----------------+
@@ -72,16 +72,16 @@ Possibly in the second half of 2020, no specific time allocated.
                  |   +--------------------+         |  +----------------+
                  +-->|dissect_qpack_stream|         +->|dissect_headers |
                      +--------------------+            +----------------+
-                                |                               |        
-                                |                               |        
-                                |       +---------------+       |        
-                                |       |     QPACK     |       |        
-                                +------>|  dictionary   |<------+        
-                                        +---------------+                
+                                |                               |       
+                                |                               |       
+                                |       +---------------+       |       
+                                |       |     QPACK     |       |       
+                                +------>|  dictionary   |<------+       
+                                        +---------------+               
 ```
 
 
-## QUIC/HTTP3 reassembly 
+## QUIC/HTTP3 reassembly
 
 The QUIC and the HTTP3 dissectors work together to reassemble HTTP3 data:
 
@@ -110,12 +110,12 @@ While stream data availalbe:
        Continue to execute the reading loop.
 ```
 
-#### Testing the QUIC stream reassembly 
+#### Testing the QUIC stream reassembly
 
 To test for correct reassembly we can use the following fields:
 - `quic.fragments`, which marks that a reassembly has been completed
 - `quic.fragment.count`, which reports the number of fragments that have been reassembled
-- `quic.reassembled.length`, which shows the size of the reassembled PDU. 
+- `quic.reassembled.length`, which shows the size of the reassembled PDU.
 
 Note that the two last fields should only be set when the reassembly has happened. This allows running the following tests:
 
@@ -126,14 +126,15 @@ In addition, the following filters should produce zero results:
 1. `not quic.fragments && quic.fragment.count > 0`
 2. `not quic.fragments && quic.reassembled.length > 0`
 
-### HTTP3 data reassembly 
+### HTTP3 data reassembly
 
 The QUIC dissector invokes the HTTP3 parser in two situations:
 
-1. When a fragmetned PDU becomes fully ressembled. In this case the HTTP3 dissector has enough data. 
-2. When a new PDU begins. In this case the HTTP3 dissector may not have enough data. 
+1. When a fragmetned PDU becomes fully ressembled. In this case the HTTP3 dissector has enough data.
+2. When a new PDU begins. In this case the HTTP3 dissector may not have enough data.
 
 In the latter case, the HTTP3 parser indicates that more data is needed by
+
 setting the `desegment_offset` and `desegment_len` fields in the `protocol
 info` shared structure.
 
@@ -146,3 +147,86 @@ Initially, the HTTP3 dissector will focus on the HTTP headers. Because of that,
 it is possible to optimize the memory use by indicating that the HTTP3 parser
 is not interested in the actual desegmented data, but only in the next PDU.
 This can be done by adding a flag to the `protocol info` structure.
+
+# Dissecting HTTP3
+
+
+## Fields to expose
+
+"http3.qpack" pertains to the session-level QPACK data (sizes of the dynamic tables).
+"http3.stream.qpack" pertains to the stream-level QPACK data (sizes of the dynamic tables).
+"http3.stream.qpack.blocked"
+
+## Using QPACK to decode HEADER frames
+
+### Managing the QPACK state
+
+The dissector needs to maintain the QPACK state of both the client and the
+server throughout the entire H3 session. That requires keeping the state of the
+H3 session in between the calls to `dissect_http3` in a `http3_session_t`:
+
+```
+typedef struct {
+    nghttp3_qpack_decoder *decoders[2]; // for requests/responses
+} http3_session_t;
+```
+
+The `http3_session_t` instances are stored as `conversation_protocol_data`. The
+`conversations` are located either by the QUIC connection ids, if found, or by
+5-tuple if absent.
+
+In addition to the per-session state, `nghttp3` requires storing per-stream
+context in `nghttp3_qpack_stream_context`.
+
+Both the session level data and the stream level data are deallocated via
+callbacks in the file scope.
+
+Open questions:
+1. Large files can have a lot of sessions/conversations, can use a lot of
+   memory. Maybe worth adding a setting to disable the QPACK decoding.
+
+### Updating QPACK decoders with QPACK Encoder data
+
+When the dissector processes PDUs from a QPACK Encoder stream, it gets the
+associated `http3_session_t` and selects the right decoder from the `decoders`
+pair. Then the dissector passes the PDU data to the correct dissector.
+
+### Decompressing HTTTP3 headers
+
+When processing a QPACK encoded HEADERS frame, the dissector gets both the `http3_session_t` and `http3_stream_t` instances associated with the stream, and starts the decoding loop:
+
+
+```
+nghttp3_qpack_decoder *decoder = h3_session->decoders[from_server];
+nghttp3_qpack_stream_context *sctx = h3_stream->qpack_context;
+nghttp3_qpack_nv header;
+uint8_t decode_status = 0;
+uint8_t error = 0;
+while (has_more_data) {
+    error = nghttp3_qpack_decoder_read_request(
+            decoder, sctx, &header, &decode_status, pdu_data, pdu_data_len, fin);
+    if (error) {
+        // add expert info
+        break;
+    }
+    if (decode_status & DECODE_BLOCKED) {
+        // add expert info
+        break;
+    }
+    if (decode_status & EMIT) {
+        // header contains the name-value pair
+        // add to the headers dissection tree.
+    }
+    if (decode_status & FINAL) {
+        // all the header data has been decoded
+        // append the remaining data to the headers dissection tree.
+    }
+} // decoding loop
+```
+
+Open questions:
+1. Where to store the header data that could not be decoded due to QPACK
+   insertion count?  Initially, just indicate that it is blocked and append the
+   hex data to the headers dissection tree.
+2. What happnes if after the decoding has finished successfully, the HEADERS
+   frame contains more data?
