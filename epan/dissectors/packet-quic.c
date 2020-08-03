@@ -1244,13 +1244,25 @@ again:
             tvbuff_t *next_tvb = tvb_new_chain(tvb, fh->tvb_data);
             add_new_data_source(pinfo, next_tvb, "Reassembled QUIC");
             stream_info->offset = seq;
+
+
+            /* Remember the desegmentation offset for the current PDU,
+             * so that we can distinguish between two cases:
+             * a. The sub-dissector has successfuly dissected the current PDU,
+             *    but does not have enough data to dissect a following PDU; and
+             * b. The sub-dissector needs more data to dissect the current PDU.
+             *
+             * In the former case, `pdu_starting_offset < pinfo->desegment_offset`
+             * and in the latter `pdu_starting_offset == pinfo->desegment_offset`
+             */
+            int pdu_starting_offset = pinfo->desegment_offset;
             process_quic_stream(next_tvb, 0, pinfo, tree, quic_info, stream_info);
             called_dissector = TRUE;
 
-            reassembly_id = get_reassembly_id(msp, stream_info);
             int old_len = (int)(tvb_reported_length(next_tvb) - last_fragment_len);
-            if (pinfo->desegment_len &&
-                pinfo->desegment_offset <= old_len) {
+            if ( pinfo->desegment_len &&
+                 (pinfo->desegment_offset == pdu_starting_offset) &&
+                 pinfo->desegment_offset <= old_len) {
                 /*
                  * "desegment_len" isn't 0, so it needs more
                  * data for something - and "desegment_offset"
@@ -1262,6 +1274,7 @@ again:
                  * being a new higher-level PDU that also
                  * needs desegmentation).
                  */
+                reassembly_id = get_reassembly_id(msp, stream_info);
                 fragment_set_partial_reassembly(&quic_reassembly_table,
                                                 pinfo, reassembly_id, NULL);
 
