@@ -1083,6 +1083,26 @@ static guint32 get_reassembly_id(struct tcp_multisegment_pdu *msp, quic_stream_i
     }
 }
 
+/* Have we seen this PDU before (and is it the start of a multi-
+ * segment PDU)?
+ */
+static struct tcp_multisegment_pdu *lookup_owning_pdu(quic_stream_state *stream, guint32 seq) {
+
+    // Look up a PDU tat starts with the same sequence number (we check for retransmissions later)
+    struct tcp_multisegment_pdu *msp = wmem_tree_lookup32(stream->multisegment_pdus, seq);
+
+    if (msp)
+        return msp;
+
+    // Else, find the most previous PDU starting before this sequence number.
+    msp = (struct tcp_multisegment_pdu *)wmem_tree_lookup32_le(stream->multisegment_pdus, seq-1);
+
+    if (msp && msp->seq <= seq && msp->nxtpdu > seq)
+        return msp;
+
+    return NULL;
+}
+
 /**
  * Reassemble stream data within a STREAM frame.
  */
@@ -1133,17 +1153,13 @@ again:
     /* Have we seen this PDU before (and is it the start of a multi-
      * segment PDU)?
      */
-    if ((msp = (struct tcp_multisegment_pdu *)wmem_tree_lookup32(stream->multisegment_pdus, seq)) &&
-            nxtseq <= msp->nxtpdu) {
+    msp = (struct tcp_multisegment_pdu *)lookup_owning_pdu(stream, seq);
+    if (msp && seq == msp->seq && nxtseq <= msp->nxtpdu) {
         // TODO show expert info for retransmission?
         proto_tree_add_debug_text(tree,
                 "TODO retransmission expert info frame %d stream_id=%" G_GINT64_MODIFIER "u offset=%d visited=%d reassembly_id=0x%08x",
                 pinfo->num, stream->stream_id, offset, PINFO_FD_VISITED(pinfo), reassembly_id);
         return;
-    }
-    /* Else, find the most previous PDU starting before this sequence number */
-    if (!msp && seq > 0) {
-        msp = (struct tcp_multisegment_pdu *)wmem_tree_lookup32_le(stream->multisegment_pdus, seq-1);
     }
 
     if (msp && msp->seq <= seq && msp->nxtpdu > seq) {
