@@ -177,7 +177,7 @@ ReassembledChain  <- Null  // ReassembledChain contains the PDU.
 While Seq < Nxtseq: 
 
     // Find a segment chain we can pass to the sub-dissector
-    ReassembleSegmentChain(Tvb, Msp, Seq, NxtSeq, Stream, Pinfo, ReassembledChain)
+    Seq <- ReassembleSegmentChain(Tvb, Msp, Seq, NxtSeq, Stream, Pinfo, ReassembledChain)
 
     If ReassembledChain != Null: 
         // SegmentChain contains the concatenation of segments that
@@ -234,10 +234,11 @@ Input:
    Stream  - current state of the stream 
    Pinfo   - packet info, which is used by the subdissector to inform of the fragmentation.
 
+Returns:     new position in the stream (the updated Seq)
+
 Output:
     ReassembledChain <- Null 
     OutMsp           <- Null 
-    OutSeq           <- Seq
  
 
 If Msp == Null:
@@ -251,8 +252,7 @@ If Msp == Null:
         // that a PDU starts on the first byte of the segment
         ReassembledChain <- Tvb 
         OutMsp <- Null
-        OutSeq <- Seq 
-        Return 
+        Return Seq
 
 Invariant: Msp != Null 
 
@@ -261,8 +261,7 @@ If IsRetransmission(Msp, Seq, Nxtseq):
     // Advance the Seq to the first unseen point.
     ReassembledChain <- Null 
     OutMsp <- Msp 
-    OutSeq <- Min(Msp->NxtSeq, NxtSeq)
-    Return 
+    Return Min(Msp->NxtSeq, NxtSeq)
 
 // We have found MSP and it is not a retransmission. Feed me, Seymour! 
 OutSeq <- AddDataToMsp(Msp, Tvb, Seq, NxtSeq)
@@ -272,7 +271,7 @@ If IsCompletelyDefragmented(Msp):
     // We belive that Msp has been completely defragmented
     ReassembledChain <- ConcatReassembledChain(Msp)
 
-Return
+Return OutSeq
 ```     
 
 
