@@ -154,7 +154,6 @@ PDU" data structure (commonly abbreviated as MSP).
 
 The above is achieved with the following parsing loop:
 
-
 ```
 DesegmentTvbuf:
 
