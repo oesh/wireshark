@@ -87,27 +87,189 @@ The QUIC and the HTTP3 dissectors work together to reassemble HTTP3 data:
 
 ### QUIC stream reassembly
 
-The QUIC dissector reads QUIC stream data, and performs the following parsing loop:
+Reassembly of the QUIC stream comprises several actions. Consider the following 
+transmission:
+
+1. STREAM frame 0 carries a single fragment of PDU 0. 
+2. STREAM frame 1 carries 3 PDU fragments:
+   1. The last fragment of PDU 0
+   2. The sole fragment of PDU 1
+   3. The first fragment of PDU 2
+3. STREAM frame 2 carries the last fragment of PDU 2.   
 
 ```
-While stream data availalbe:
-  MSP <- find pending PDU that overlaps with the available data.
-  If MSP:
-     Attempt to reassemble the MSP
-     If MSP is fully reassembled:
-         IsFragmented <- Invoke HTTP3 dissector
-         Check invariant: !IsFragmented
-     Else:
-         Append a copy of stream data bytes to the MSP.
-         Return.
-  Else:
-    IsFragmented <- Invoke HTTP3 dissector.
-    If IsFragmented:
-       MSP <- Create new MSP
-       Append a copy of stream data bytes to the MSP
-       Return.
-    Else:
-       Continue to execute the reading loop.
++------------------------+----------------------------------------+--------------------+
+|STREAM frame: 0         |STREAM frame: 1                         |STREAM frame: 2     |
+|Length: 1506            |Length: 1506                            |Length: 1206        |
+|                        |                                        |                    |
++---+--------------------+---+------------------------------------+---+----------------+
+|Hdr|Payload             |Hdr|Payload                             |Hdr|Payload         |
++---+--------------------+---+-----------+------------+-----------+---+----------------+
+    |                    |   |           |            |           |   |                |
+    |frag 0_0            |   |frag 0_1   |frag 1_0    |frag 2_0   |   |frag 2_1        |
+    |length: 1500        |   |length: 500|length: 200 |length: 800|   |length: 1200    |
+    |                    |   |           |            |           |   |                |
+    +--------------------+   +-----------+------------+-----------+   +----------------+
+                                                                                        
+                                                                                        
+    +-----------------------------------+------------+---------------------------------+
+    |PDU:    0                          |PDU:    1   |PDU:    2                        |
+    |offset: 0                          |offset: 2000|offset: 2200                     |
+    |length: 2000                       |length: 200 |length: 2000                     |
+    |                                   |            |                                 |
+    +-----------------------------------+------------+---------------------------------+
+
+```
+
+The reassembly requires: 
+  1. Identifying the fragment boundaries. 
+  2. Matching fragments to the corresponding PDUs.
+  3. Concatenating the bytes from the fragments into contiguous tvbs, for the
+     subdissector
+
+The QUIC dissector lacks the knowledge on the PDU structure. Because of that it
+has to depend on the sub-protocol dissector (HTTP3 in this case) to identify
+the boundaries of the PDUs. 
+
+The way Wireshark is commonly achieving such cooperation is by using two fields
+in the `Packet Info` structure, which is visible to both the QUIC and the HTTP3
+(or other subprotocol) dissectors. These two fields - `desegment_offset` and
+`desegment_length` allow the higher-level protocol to request desegmentation of
+a specific PDU, in a way similar to:
+
+```
+QUIC dissector {
+    pinfo->desegment_length <- 0;
+    invoke sub-protocol dissector;
+    if (pinfo->desegment_length > 0) { 
+        // Sub-protocol has requested desegmentation from `pinfo->desegment_offset` 
+        // until `pinfo->desegment_offset + pinfo->desegment_length`
+    }
+}
+```
+
+Information on the individual fragmented PDUs is stored in the "Multi-Segment
+PDU" data structure (commonly abbreviated as MSP).
+
+
+The above is achieved with the following parsing loop:
+
+```
+
+ReassembleSegmentChain:
+
+Input:
+   Tvb     - data of the current QUIC segment
+   Msp     - Current MSP 
+   Seq     - current position in the stream 
+   Nxtseq  - position of the next segment in the stream
+   Stream  - current state of the stream 
+   Pinfo   - packet info, which is used by the subdissector to inform of the fragmentation.
+
+Output:
+    ReassembledChain <- Null 
+    OutMsp           <- Null 
+    OutSeq           <- Seq
+ 
+
+If Msp == Null:
+    // The MSP may have been set by a previous iteration of
+    // the desegmentation loop. In this case proceed feeding
+    // it with data. Otherwise, attempt to determine whether Seq belongs to a fragmented MSP
+    Msp <- LookupCorrespondingMsp(Stream, Seq, Nxtseq)
+
+    if Msp == Null:
+        // We could not find a MSP that this segment corresponds to. Assume
+        // that a PDU starts on the first byte of the segment
+        ReassembledChain <- Tvb 
+        OutMsp <- Null
+        OutSeq <- Seq 
+        Return 
+
+Invariant: Msp != Null 
+
+If IsRetransmission(Msp, Seq, Nxtseq):
+    // Some bytes between Seq and Nxtseq have already been seen
+    // Advance the Seq to the first unseen point.
+    ReassembledChain <- Null 
+    OutMsp <- Msp 
+    OutSeq <- Min(Msp->NxtSeq, NxtSeq)
+    Return 
+
+// We have found MSP and it is not a retransmission. Feed me, Seymour! 
+OutSeq <- AddDataToMsp(Msp, Tvb, Seq, NxtSeq)
+OutMsp <- Msp
+
+If IsCompletelyDefragmented(Msp):
+    // We belive that Msp has been completely defragmented
+    ReassembledChain <- ConcatReassembledChain(Msp)
+
+Return
+        
+
+DesegmentTvbuf:
+
+Input:
+   Tvb - data of the current QUIC segment
+   Offset - offset within the Tvb
+   Length  - length of the Tvb
+   Stream  - current state of the stream 
+   Pinfo   - packet info, which is used by the subdissector to inform of the fragmentation.
+ 
+Setup:
+
+// Move from the tvb-based offsets to the stream-based offsets
+Seq    <- Stream->stream_offset // set Seq to the logical offset in the stream 
+Nxtseq <- Seq + Length - Offset  // set Nxtseq to the logical ofset of the next TVB
+
+
+Msp               <- Null  // Multi-segment PDU contains the segmentation metadata
+ReassembledChain  <- Null  // ReassembledChain contains the PDU.
+
+While Seq < Nxtseq: 
+
+    // Find a segment chain we can pass to the sub-dissector
+    ReassembleSegmentChain(Tvb, Msp, Seq, NxtSeq, Stream, Pinfo, ReassembledChain)
+
+    If ReassembledChain != Null: 
+        // SegmentChain contains the concatenation of segments that
+        // contains the PDU. Unless the PDU ends on the segment boundary,
+        // the SegmentChain will contain fragments of subsequent PDUs.
+        // It can also contain one or several unfragmented PDUs, 
+        // followed by a fragment.
+
+        InvokeSubDissector(CompositeTvb, Pinfo)
+
+
+        // The sub-dissector will attempt to dissect as many PDUs as it can.
+        // There are several possible outcomes:
+
+        If Pinfo->desegment_length == 0:
+            // The sub-dissector has successfully dissected the PDU (plus possible extra PDUs)
+            // and has stopped at a PDU boundary. In this case, `Pinfo->desegment_length` will 
+            // be equal to zero.
+            // We are done with this Tvb.
+            Return 
+
+        Else: 
+            // More desegmentation is needed 
+            Seq <- Pinfo->desegment_offset
+
+            If Pinfo->desegment_offset != Msp->seq:
+                // The sub-dissector has sucessfully dissected the PDU associated with
+                // Msp (along with any unfragmented PDUs that may follow), and had stopped
+                // at a fragment of some future PDU. 
+            
+                Msp <- CreateNewMsp(Pinfo->desegment_offset, Pinfo->desegment_length)
+                
+            Else:
+                // The sub-dissector was not able to successfully dissect the PDU. One possible
+                // scenario is that the sub-dissector was not able to accurately establish the 
+                // PDU boundaries, and had to request the entire segment. 
+                Msp <- UpdateMsp(Msp, Pinfo->desegment_length)
+
+            // In both cases more data has to be consumed from the Tvb.
+            Continue
 ```
 
 #### Testing the QUIC stream reassembly
