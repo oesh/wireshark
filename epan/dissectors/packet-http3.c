@@ -99,6 +99,9 @@ static const val64_string http3_frame_types[] = {
 typedef struct _http3_stream_info {
     guint64 uni_stream_type;
     guint64 broken_from_offset;     /**< Unrecognized stream starting at offset (if non-zero). */
+#ifdef HAVE_NGHTTP3
+    nghttp3_qpack_stream_context *sctx; /**< Stream context for QPACK decoding */
+#endif
 } http3_stream_info;
 
 typedef struct _http3_session {
@@ -275,6 +278,12 @@ qpack_decoder_del_cb(wmem_allocator_t *allocator _U_, wmem_cb_event_t event _U_,
     nghttp3_qpack_decoder_del((nghttp3_qpack_decoder*)user_data);
     return FALSE;
 } 
+
+static gboolean
+qpack_stream_context_del_cb(wmem_allocator_t *allocator _U_, wmem_cb_event_t event _U_, void *user_data) { 
+    nghttp3_qpack_stream_context_del((nghttp3_qpack_stream_context*)user_data);
+    return FALSE;
+} 
 #endif 
 
 http3_session*
@@ -290,14 +299,14 @@ get_http3_session(packet_info *pinfo)
 #ifdef HAVE_NGHTTP3 
        for (int dir=0; dir < 2; dir++) { 
             nghttp3_qpack_decoder **pdecoder = &(h3session->qpack_decoders[dir]);
-           nghttp3_qpack_decoder_new(
-                   pdecoder,
-                   qpack_max_dtable_size, 
-                   qpack_max_blocked, 
-                   nghttp3_mem_default());
-           nghttp3_qpack_decoder_set_dtable_cap(
-                *pdecoder,
-                qpack_max_dtable_size);
+            nghttp3_qpack_decoder_new(
+                    pdecoder,
+                    qpack_max_dtable_size, 
+                    qpack_max_blocked, 
+                    nghttp3_mem_default());
+            nghttp3_qpack_decoder_set_dtable_cap(
+                    *pdecoder,
+                    qpack_max_dtable_size);
             
            wmem_register_callback(wmem_file_scope(), qpack_decoder_del_cb, *pdecoder);
        }
@@ -350,6 +359,10 @@ dissect_http3(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
     if (!h3_stream) {
         h3_stream = wmem_new0(wmem_file_scope(), http3_stream_info);
         quic_stream_add_proto_data(pinfo, stream_info, h3_stream);
+#ifdef HAVE_NGHTTP3
+        nghttp3_qpack_stream_context_new(&h3_stream->sctx, stream_info->stream_id, nghttp3_mem_default());
+        wmem_register_callback(wmem_file_scope(), qpack_stream_context_del_cb, h3_stream->sctx);
+#endif
     }
 
     // If a STREAM has unknown data, everything afterwards cannot be dissected.
