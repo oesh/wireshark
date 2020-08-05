@@ -22,6 +22,14 @@
 
 #include "packet-quic.h"
 
+#include <epan/conversation.h>
+
+#ifdef HAVE_NGHTTP3
+#include <epan/uat.h>
+#include <epan/decode_as.h>
+#include <nghttp3/nghttp3.h>
+#endif
+
 void proto_reg_handoff_http3(void);
 void proto_register_http3(void);
 
@@ -92,6 +100,17 @@ typedef struct _http3_stream_info {
     guint64 uni_stream_type;
     guint64 broken_from_offset;     /**< Unrecognized stream starting at offset (if non-zero). */
 } http3_stream_info;
+
+typedef struct _http3_session {
+#ifdef HAVE_NGHTTP3
+    nghttp3_qpack_decoder *qpack_decoders[2]; /**< Decoders for outgoing/incoming QPACK streams. */
+#endif
+} http3_session;
+
+#ifdef HAVE_NGHTTP3 
+const size_t qpack_max_dtable_size = 1000;
+const size_t qpack_max_blocked = 10;
+#endif
 
 /**
  * Whether this is a reserved code point for Stream Type, Frame Type, Error
@@ -249,6 +268,45 @@ dissect_http3_uni_stream(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, in
 
     return offset;
 }
+
+#ifdef HAVE_NGHTTP3 
+static gboolean
+qpack_decoder_del_cb(wmem_allocator_t *allocator _U_, wmem_cb_event_t event _U_, void *user_data) { 
+    nghttp3_qpack_decoder_del((nghttp3_qpack_decoder*)user_data);
+    return FALSE;
+} 
+#endif 
+
+http3_session*
+get_http3_session(packet_info *pinfo)
+{ 
+    http3_session* h3session; 
+    conversation_t* conversation = find_or_create_conversation(pinfo);
+
+    h3session = (http3_session*)conversation_get_proto_data(conversation,
+                                                              proto_http3);
+    if (!h3session) { 
+        h3session = wmem_new0(wmem_file_scope(), http3_session);
+#ifdef HAVE_NGHTTP3 
+       for (int dir=0; dir < 2; dir++) { 
+            nghttp3_qpack_decoder **pdecoder = &(h3session->qpack_decoders[dir]);
+           nghttp3_qpack_decoder_new(
+                   pdecoder,
+                   qpack_max_dtable_size, 
+                   qpack_max_blocked, 
+                   nghttp3_mem_default());
+           nghttp3_qpack_decoder_set_dtable_cap(
+                *pdecoder,
+                qpack_max_dtable_size);
+            
+           wmem_register_callback(wmem_file_scope(), qpack_decoder_del_cb, *pdecoder);
+       }
+#endif
+        conversation_add_proto_data(conversation, proto_http3, h3session);
+    } 
+
+	return h3session;
+} 
 
 static int
 dissect_http3(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)

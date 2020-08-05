@@ -1,8 +1,8 @@
 # Find the system's Nghttp3 includes and library
 #
 #  NGHTTP3_INCLUDE_DIRS - where to find nghttp3.h
-#  NGHTTP3_LIBRARIES    - List of libraries when using nghttp2
-#  NGHTTP3_FOUND        - True if nghttp2 found
+#  NGHTTP3_LIBRARIES    - List of libraries when using nghttp3
+#  NGHTTP3_FOUND        - True if nghttp3 found
 #  NGHTTP3_DLL_DIR      - (Windows) Path to the Nghttp2 DLL
 #  NGHTTP3_DLL          - (Windows) Name of the Nghttp2 DLL
 
