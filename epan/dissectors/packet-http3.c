@@ -134,6 +134,7 @@ typedef struct _http3_session {
 #ifdef HAVE_NGHTTP3
     nghttp3_qpack_decoder *qpack_decoders[2]; /**< Decoders for outgoing/incoming QPACK streams. */
 #endif
+    int id;
 } http3_session;
 
 http3_session* get_http3_session(packet_info *pinfo);
