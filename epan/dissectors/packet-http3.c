@@ -23,6 +23,7 @@
 #include <epan/expert.h>
 
 #include "packet-quic.h"
+#include "wsutil/pint.h"
 
 #include <epan/conversation.h>
 
@@ -42,6 +43,14 @@ static int hf_http3_frame_type = -1;
 static int hf_http3_frame_length = -1;
 static int hf_http3_frame_payload = -1;
 
+static int hf_http3_header = -1;
+static int hf_http3_header_length = -1;
+static int hf_http3_header_count = -1;
+static int hf_http3_header_name_length = -1;
+static int hf_http3_header_name = -1;
+static int hf_http3_header_value_length = -1;
+static int hf_http3_header_value = -1;
+
 static expert_field ei_http3_unknown_stream_type = EI_INIT;
 static expert_field ei_http3_qpack_failed = EI_INIT;
 static expert_field ei_http3_qpack_enc_update = EI_INIT;
@@ -50,11 +59,10 @@ static expert_field ei_http3_header_nv = EI_INIT;
 
 /* Initialize the subtree pointers */
 static gint ett_http3 = -1;
+static gint ett_http3_headers = -1;
 
 #ifdef HAVE_NGHTTP3
 static char nghttp3_vprintf_arena[2048];
-static char nghttp3_header_name_arena[2048];
-static char nghttp3_header_value_arena[2048];
 #endif
 
 /**
@@ -138,20 +146,16 @@ const size_t qpack_max_blocked = 10;
 /* Decompressed header field */
 typedef struct {
     /* encoded (compressed) length */
-    gint length;
-    struct {
-        /* header data */
-        char *data;
-        /* length of data */
-        guint datalen;
-    } data;
+    size_t enc_len;
+    size_t len;
+    const char *data;
 } http3_header_t;
 
 /* Cached decompressed header data in one packet_info */
 typedef struct {
     /* list of pointer to wmem_array_t, which is array of
        http2_header_t */
-    wmem_list_t *header_list;
+    wmem_array_t *headers;
 } http3_header_data_t;
 
 /**
@@ -221,21 +225,40 @@ http3_check_frame_size(tvbuff_t *tvb, packet_info *pinfo, int offset)
 }
 
 #ifdef  HAVE_NGHTTP3
-static const char*
-nghttp3_extract_str(nghttp3_rcbuf *rcb, char* arena, size_t asize) {
-    if (rcb == NULL) {
-        return "";
-    }
+static http3_header_t* decode_nghttp3_header(nghttp3_qpack_nv *nv, size_t enc_len) { 
+    http3_header_t *out = wmem_new0(wmem_file_scope(), http3_header_t);
+    guint32 len;
 
-    nghttp3_vec vec = nghttp3_rcbuf_get_buf(rcb);
+    out->enc_len = enc_len;
 
-    size_t len = MIN(asize, vec.len + 1);
-    snprintf(arena, len, "%s", vec.base);
+    nghttp3_vec name_vec = nghttp3_rcbuf_get_buf(nv->name);
+    nghttp3_vec value_vec = nghttp3_rcbuf_get_buf(nv->value);
+   
+    out->len = name_vec.len + value_vec.len + sizeof(guint32) * 2;
 
-    nghttp3_rcbuf_decref(rcb);
+    /* Prepare buffer... with the following format
+       name length (uint32)
+       name (string)
+       value length (uint32)
+       value (string)
+     */
+    char* pstr = wmem_realloc(wmem_file_scope(), NULL, out->len);
+    out->data = pstr;
 
-    return arena;
-}
+    len = (guint32)name_vec.len;
+    phton32(pstr, len);
+    pstr += sizeof(guint32);
+    memcpy(pstr, name_vec.base, name_vec.len);
+    pstr += name_vec.len;
+
+    len = (guint32)value_vec.len;
+    phton32(pstr, len);
+    pstr += sizeof(guint32);
+    memcpy(pstr, value_vec.base, value_vec.len);
+
+    // TODO: cache the pstr
+    return out;
+} 
 #endif
 
 static int
@@ -243,12 +266,20 @@ dissect_http3_headers(
         tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint offset, guint64 length, http3_stream_info *h3_stream) {
 #ifdef  HAVE_NGHTTP3
 
+    tvbuff_t *dec_headers_block_tvb = tvb_new_composite();
+
+    int dec_headers_block_len = 0;
+    guint dec_headers_block_count = 0;
+    guint i;
+    int hoffset = 0;
+    int remaining;
+    proto_item *header, *ti;
     http3_header_data_t *header_data;
 
     header_data = (http3_header_data_t*)p_get_proto_data(wmem_file_scope(), pinfo, proto_http3, 0);
     if (!header_data) {
         header_data = wmem_new0(wmem_file_scope(), http3_header_data_t);
-        header_data->header_list = wmem_list_new(wmem_file_scope());
+        header_data->headers = wmem_array_sized_new(wmem_file_scope(), sizeof(http3_header_t), 16);
 
         p_add_proto_data(wmem_file_scope(), pinfo, proto_http3, 0, header_data);
     }
@@ -261,19 +292,18 @@ dissect_http3_headers(
         nghttp3_qpack_stream_context *sctx = h3_stream->sctx;
         nghttp3_qpack_decoder *decoder = h3_session->qpack_decoders[h3_stream->dir];
 
-        nghttp3_buf headers_data;
+        nghttp3_buf enc_headers_block;
         // Get a coalesced copy of the TVB payload into the nghttp3 buffer
-        headers_data.begin = tvb_memdup(wmem_file_scope(), tvb, offset, length);
-        headers_data.pos = headers_data.begin;
-        headers_data.end = headers_data.begin + length;
-        headers_data.last = headers_data.end;
+        enc_headers_block.begin = tvb_memdup(wmem_file_scope(), tvb, offset, length);
+        enc_headers_block.pos = enc_headers_block.begin;
+        enc_headers_block.end = enc_headers_block.begin + length;
+        enc_headers_block.last = enc_headers_block.end;
 
-        int remaining;
-        while ((remaining = (int)nghttp3_buf_len(&headers_data)) > 0) {
+        while ((remaining = (int)nghttp3_buf_len(&enc_headers_block)) > 0) {
 
             uint8_t decoding_flags;
             nghttp3_ssize nread = nghttp3_qpack_decoder_read_request(
-                    decoder, sctx, &nv, &decoding_flags, headers_data.pos, remaining, 1);
+                    decoder, sctx, &nv, &decoding_flags, enc_headers_block.pos, remaining, 1);
 
             if (nread < 0) {
                 proto_tree_add_expert_format(tree, pinfo, &ei_http3_header_failed, tvb, offset, remaining,
@@ -296,17 +326,9 @@ dissect_http3_headers(
             }
 
             if (decoding_flags & NGHTTP3_QPACK_DECODE_FLAG_EMIT) {
-                const char* hdr_name = nghttp3_extract_str(nv.name, nghttp3_header_name_arena, sizeof(nghttp3_header_name_arena));
-                const char* hdr_value = nghttp3_extract_str(nv.value, nghttp3_header_value_arena, sizeof(nghttp3_header_value_arena));
-
-                proto_tree_add_expert_format(tree, pinfo, &ei_http3_header_nv, tvb, offset, remaining,
-                        "Successfully decoded HTTP header dir=%d off=%d rem=%d nread=%lu header=%s val=%s",
-                        h3_stream->dir,
-                        offset,
-                        remaining,
-                        nread,
-                        hdr_name,
-                        hdr_value);
+                // Convert the decodec nv into a header block
+                http3_header_t *hdr = decode_nghttp3_header(&nv, nread);
+                wmem_array_append(header_data->headers, hdr, 1);
             }
 
             if (decoding_flags & NGHTTP3_QPACK_DECODE_FLAG_FINAL) {
@@ -318,9 +340,73 @@ dissect_http3_headers(
             }
 
             offset += nread;
-            headers_data.pos += nread;
+            enc_headers_block.pos += nread;
         }
     }
+
+
+    // Collect the individual decoded headers into individual TVBs,
+    // and append to the `dec_headers_block_tvb` composite TVB.
+    for(i = 0; i < wmem_array_get_count(header_data->headers); ++i) {
+        tvbuff_t *dec_hdr_tvb;
+        http3_header_t *dec_hdr = wmem_array_index(header_data->headers, i);
+
+        dec_headers_block_len += dec_hdr->len;
+        dec_headers_block_count ++;
+
+        /* Now setup the tvb buffer to have the new data */
+        dec_hdr_tvb = tvb_new_child_real_data(tvb, dec_hdr->data, (int)dec_hdr->len, (int)dec_hdr->len);
+        tvb_composite_append(dec_headers_block_tvb, dec_hdr_tvb);
+    }
+
+    tvb_composite_finalize(dec_headers_block_tvb);
+    add_new_data_source(pinfo, dec_headers_block_tvb, "Decompressed Headers Block");
+
+    ti = proto_tree_add_uint(tree, hf_http3_header_length, dec_headers_block_tvb, hoffset, 1, dec_headers_block_len);
+    proto_item_set_generated(ti);
+
+    ti = proto_tree_add_uint(tree, hf_http3_header_count, dec_headers_block_tvb, hoffset, 1, dec_headers_block_count);
+    proto_item_set_generated(ti);
+
+    for(i = 0; i < dec_headers_block_count; ++i) { 
+        http3_header_t *dec_hdr = wmem_array_index(header_data->headers, i);
+
+        proto_tree *header_tree;
+        guint32 header_name_length;
+        guint32 header_value_length;
+        const guint8 *header_name;
+        const guint8 *header_value;
+
+        /* Add Header subtree with description */
+        header = proto_tree_add_item(tree, hf_http3_header, tvb, offset, (int)dec_hdr->len, ENC_NA);
+
+        header_tree = proto_item_add_subtree(header, ett_http3_headers);
+
+        /* Add the header name length */
+        proto_tree_add_item_ret_uint(
+            header_tree, hf_http3_header_name_length, dec_headers_block_tvb, hoffset,
+            sizeof(guint32), ENC_BIG_ENDIAN, &header_name_length);
+        hoffset += sizeof(guint32);
+
+        /* Add the header name */
+        proto_tree_add_item_ret_string(
+            header_tree, hf_http3_header_name, dec_headers_block_tvb, hoffset,
+            header_name_length, ENC_ASCII|ENC_NA, wmem_packet_scope(), &header_name);
+        hoffset += header_name_length;
+
+        /* Add the header value length */
+        proto_tree_add_item_ret_uint(
+            header_tree, hf_http3_header_value_length, dec_headers_block_tvb, hoffset,
+            sizeof(guint32), ENC_BIG_ENDIAN, &header_value_length);
+        hoffset += sizeof(guint32);
+
+        /* Add the header name */
+        proto_tree_add_item_ret_string(
+            header_tree, hf_http3_header_value, dec_headers_block_tvb, hoffset,
+            header_value_length, ENC_ASCII|ENC_NA, wmem_packet_scope(), &header_value);
+        hoffset += header_value_length;
+    }
+
 #endif /* HAVE_NGHTTP3 */
 
     return offset;
@@ -632,10 +718,47 @@ proto_register_http3(void)
             FT_BYTES, BASE_NONE, NULL, 0x0,
             NULL, HFILL }
         },
+        { &hf_http3_header,
+            { "Header", "http3.header",
+               FT_NONE, BASE_NONE, NULL, 0x0,
+               NULL, HFILL }
+        },
+        { &hf_http3_header_length,
+            { "Header Length", "http3.header.length",
+               FT_UINT32, BASE_DEC, NULL, 0x0,
+               NULL, HFILL }
+        },
+        { &hf_http3_header_count,
+            { "Header Count", "http3.header.count",
+               FT_UINT32, BASE_DEC, NULL, 0x0,
+               NULL, HFILL }
+        },
+        { &hf_http3_header_name_length,
+            { "Name Length", "http3.header.name.length",
+              FT_UINT32, BASE_DEC, NULL, 0x0,
+              NULL, HFILL }
+        },
+        { &hf_http3_header_name,
+            { "Name", "http3.header.name",
+              FT_STRING, BASE_NONE, NULL, 0x0,
+              NULL, HFILL }
+        },
+        { &hf_http3_header_value_length,
+            { "Value Length", "http3.header.value.length",
+              FT_UINT32, BASE_DEC, NULL, 0x0,
+              NULL, HFILL }
+        },
+        { &hf_http3_header_value,
+            { "Value", "http3.header.value",
+              FT_STRING, BASE_NONE, NULL, 0x0,
+              NULL, HFILL }
+        },
+
     };
 
     static gint *ett[] = {
         &ett_http3,
+        &ett_http3_headers,
     };
 
     static ei_register_info ei[] = {
