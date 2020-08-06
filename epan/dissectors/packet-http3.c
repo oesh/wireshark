@@ -16,6 +16,7 @@
  */
 
 #include <config.h>
+#include <stdio.h>
 
 #include <epan/packet.h>
 #include <epan/expert.h>
@@ -41,9 +42,14 @@ static int hf_http3_frame_length = -1;
 static int hf_http3_frame_payload = -1;
 static expert_field ei_http3_unknown_stream_type = EI_INIT;
 static expert_field ei_http3_qpack_failed = EI_INIT;
+static expert_field ei_http3_qpack_enc_update = EI_INIT;
 
 /* Initialize the subtree pointers */
 static gint ett_http3 = -1;
+
+#ifdef HAVE_NGHTTP3
+static char nghttp3_vprintf_arena[2048];
+#endif 
 
 /**
  * Unidirectional stream types.
@@ -256,55 +262,34 @@ dissect_http3_uni_stream(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, in
             // TODO
 #ifdef HAVE_NGHTTP3 
             {
-                size_t remaining = tvb_captured_length_remaining(tvb, offset);
+                gint remaining = tvb_captured_length_remaining(tvb, offset);
                     
-                if (remaining) { 
-                    nghttp3_buf buf;
+                if (remaining > 0) { 
                     int direction = stream_info->from_server == 0 ? 0 : 1;
 
                     http3_session *h3_session = get_http3_session(pinfo);
                     nghttp3_qpack_decoder *decoder = h3_session->qpack_decoders[direction];
                
-                    // Get a copy of the TVB payload into the nghttp3 buffer 
-                    buf.pos = buf.begin = tvb_memdup(wmem_file_scope(), tvb, offset, remaining);
-                    buf.end = buf.begin + remaining;
+                    // Get a coalesced copy of the TVB payload into the nghttp3 buffer 
+                    const uint8_t *qpack_buf = tvb_memdup(wmem_file_scope(), tvb, offset, remaining);
 
-                    nghttp3_ssize  nread = nghttp3_qpack_decoder_read_encoder(decoder, buf.pos, nghttp3_buf_len(&buf));
+                    nghttp3_ssize  nread = nghttp3_qpack_decoder_read_encoder(decoder, qpack_buf, remaining);
                     uint64_t       icnt = nghttp3_qpack_decoder_get_icnt(decoder);
 
-                    switch (nread) { 
-                        case NGHTTP3_ERR_NOMEM:
-                            proto_tree_add_expert_format(tree, pinfo, &ei_http3_qpack_failed, tvb, offset, 0,
-                                    "QPACK: out of memory "
-                                    "(icnt=%llu) " 
-                                    "when trying to read %lu bytes of encoder stream", 
-                                    icnt,
-                                    remaining);
-                            break;
-                        case NGHTTP3_ERR_QPACK_FATAL:
-                            proto_tree_add_expert_format(tree, pinfo, &ei_http3_qpack_failed, tvb, offset, 0,
-                                    "QPACK: unrecoverable error "
-                                    "(icnt=%llu) " 
-                                    "when trying to read %lu bytes of encoder stream",
-                                    icnt,
-                                    remaining);
-                            break;
-                        case NGHTTP3_ERR_QPACK_ENCODER_STREAM_ERROR:
-                            proto_tree_add_expert_format(tree, pinfo, &ei_http3_qpack_failed, tvb, offset, 0,
-                                    "QPACK: can not interpret encoder stream "
-                                    "(icnt=%llu) " 
-                                    "when trying to read %lu bytes of encoder stream",
-                                    icnt,
-                                    remaining);
-                            break;
-                        default:
-                            proto_tree_add_expert_format(tree, pinfo, &ei_http3_qpack_failed, tvb, offset, 0,
-                                    "QPACK: decoder returned %ld "
-                                    "(icnt=%llu) " 
-                                    "when trying to read %lu bytes of encoder stream", 
-                                    nread, 
-                                    icnt,
-                                    remaining);
+                    if (nread > 0) { 
+                        proto_tree_add_expert_format(tree, pinfo, &ei_http3_qpack_enc_update, tvb, offset, remaining,
+                                "QPACK: successfully decoded encoder stream dir=%1d nread=%ld size=%d icnt=%llu",
+                                direction,
+                                nread,
+                                remaining,
+                                icnt);
+                    } else { 
+                        proto_tree_add_expert_format(tree, pinfo, &ei_http3_qpack_failed, tvb, offset, 0,
+                                "QPACK: failed to decode dir=%1d nread=%ld size=%d icnt=%llu",
+                                direction,
+                                nread,
+                                remaining,
+                                icnt);
                     }
                 }
             }
@@ -342,6 +327,21 @@ qpack_stream_context_del_cb(wmem_allocator_t *allocator _U_, wmem_cb_event_t eve
     nghttp3_qpack_stream_context_del((nghttp3_qpack_stream_context*)user_data);
     return FALSE;
 } 
+
+static void nghttp3_vprintf_log(int level, const char *fmt, va_list args) { 
+    int rv = vsnprintf(nghttp3_vprintf_arena, sizeof(nghttp3_vprintf_arena), fmt, args);
+    if (rv > 0) { 
+        g_log(G_LOG_DOMAIN, level, "%s", nghttp3_vprintf_arena);
+    } else { 
+        g_warning("Could not format nghttp3 log message: rv=%d level=%d fmt=\"%s\"",
+            rv, level, fmt);
+    } 
+} 
+
+static void nghttp3_warning_vprintf_cb(const char *fmt, va_list args) { 
+    nghttp3_vprintf_log(G_LOG_LEVEL_WARNING, fmt, args);
+} 
+
 #endif 
 
 http3_session*
@@ -351,11 +351,11 @@ get_http3_session(packet_info *pinfo)
     conversation_t* conversation = find_or_create_conversation(pinfo);
 
     h3session = (http3_session*)conversation_get_proto_data(conversation,
-                                                              proto_http3);
+            proto_http3);
     if (!h3session) { 
         h3session = wmem_new0(wmem_file_scope(), http3_session);
 #ifdef HAVE_NGHTTP3 
-       for (int dir=0; dir < 2; dir++) { 
+        for (int dir=0; dir < 2; dir++) { 
             nghttp3_qpack_decoder **pdecoder = &(h3session->qpack_decoders[dir]);
             nghttp3_qpack_decoder_new(
                     pdecoder,
@@ -365,14 +365,16 @@ get_http3_session(packet_info *pinfo)
             nghttp3_qpack_decoder_set_dtable_cap(
                     *pdecoder,
                     qpack_max_dtable_size);
-            
-           wmem_register_callback(wmem_file_scope(), qpack_decoder_del_cb, *pdecoder);
-       }
+
+            wmem_register_callback(wmem_file_scope(), qpack_decoder_del_cb, *pdecoder);
+        }
+        
+        nghttp3_set_debug_vprintf_callback(nghttp3_warning_vprintf_cb);
 #endif
         conversation_add_proto_data(conversation, proto_http3, h3session);
     } 
 
-	return h3session;
+    return h3session;
 } 
 
 static int
@@ -502,6 +504,10 @@ proto_register_http3(void)
         { &ei_http3_qpack_failed,
           { "http3.qpack_failed", PI_UNDECODED, PI_WARN,
             "Header decompression failed", EXPFILL }
+        },
+        { &ei_http3_qpack_enc_update,
+          { "http3.qpack_encoder_update", PI_UNDECODED, PI_WARN,
+            "Decoded QPACK encoder stream", EXPFILL }
         },
     };
 
