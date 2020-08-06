@@ -1373,7 +1373,7 @@ again:
                 msp->flags |= MSP_FLAGS_REASSEMBLE_ENTIRE_SEGMENT;
             } else {
                 msp = pdu_store_sequencenumber_of_next_pdu(pinfo,
-                    deseg_seq, deseg_seq+pinfo->desegment_len, stream->multisegment_pdus);
+                    deseg_seq, nxtseq+pinfo->desegment_len, stream->multisegment_pdus);
             }
 
             /* add this segment as the first one for this new pdu */

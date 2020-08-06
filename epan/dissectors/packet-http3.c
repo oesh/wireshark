@@ -169,16 +169,17 @@ get_http3_frame_size(tvbuff_t *tvb, int offset)
     return (int)frame_size;
 }
 
-static gboolean
+static gboolean                    
 http3_check_frame_size(tvbuff_t *tvb, packet_info *pinfo, int offset)
-{
+{                                  
     int frame_size = get_http3_frame_size(tvb, offset);
-    if (frame_size && frame_size <= tvb_reported_length_remaining(tvb, offset)) {
+    int remaining = tvb_reported_length_remaining(tvb, offset);
+    if (frame_size && frame_size <= remaining) {
         return TRUE;
     }
 
-    pinfo->desegment_offset = offset;
-    pinfo->desegment_len = frame_size ? frame_size : DESEGMENT_ONE_MORE_SEGMENT;
+    pinfo->desegment_offset = offset; 
+    pinfo->desegment_len = frame_size ? (frame_size - remaining): DESEGMENT_ONE_MORE_SEGMENT;
     return FALSE;
 }
 
