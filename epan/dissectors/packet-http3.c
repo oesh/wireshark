@@ -43,12 +43,16 @@ static int hf_http3_frame_payload = -1;
 static expert_field ei_http3_unknown_stream_type = EI_INIT;
 static expert_field ei_http3_qpack_failed = EI_INIT;
 static expert_field ei_http3_qpack_enc_update = EI_INIT;
+static expert_field ei_http3_header_failed = EI_INIT;
+static expert_field ei_http3_header_nv = EI_INIT;
 
 /* Initialize the subtree pointers */
 static gint ett_http3 = -1;
 
 #ifdef HAVE_NGHTTP3
 static char nghttp3_vprintf_arena[2048];
+static char nghttp3_header_name_arena[2048];
+static char nghttp3_header_value_arena[2048];
 #endif 
 
 /**
@@ -82,10 +86,11 @@ static const val64_string http3_stream_types[] = {
  * https://tools.ietf.org/html/draft-ietf-quic-http-29#section-7
  * 62-bit space.
  */
+#define HTTP3_FRAME_TYPE_HEADERS 0x01
 static const val64_string http3_frame_types[] = {
     /* 0x00 - 0x3f Assigned via Standards Action or IESG Review policies. */
     { 0x00, "DATA" },
-    { 0x01, "HEADERS" },
+    { HTTP3_FRAME_TYPE_HEADERS, "HEADERS" },
     { 0x02, "Reserved" },
     { 0x03, "CANCEL_PUSH" },
     { 0x04, "SETTINGS" },
@@ -101,6 +106,10 @@ static const val64_string http3_frame_types[] = {
     { 0, NULL }
 };
 
+enum http3_stream_direction { 
+    UPSTREAM,   /**< Client to server */
+    DOWNSTREAM, /**< Server to client */
+};
 
 typedef struct _http3_stream_info {
     guint64 uni_stream_type;
@@ -108,6 +117,7 @@ typedef struct _http3_stream_info {
 #ifdef HAVE_NGHTTP3
     nghttp3_qpack_stream_context *sctx; /**< Stream context for QPACK decoding */
 #endif
+    enum http3_stream_direction dir;
 } http3_stream_info;
 
 typedef struct _http3_session {
@@ -189,8 +199,101 @@ http3_check_frame_size(tvbuff_t *tvb, packet_info *pinfo, int offset)
     return FALSE;
 }
 
+#ifdef  HAVE_NGHTTP3
+static const char*
+nghttp3_extract_str(nghttp3_rcbuf *rcb, char* arena, size_t asize) { 
+    if (rcb == NULL) { 
+        return "";
+    } 
+
+    nghttp3_vec vec = nghttp3_rcbuf_get_buf(rcb); 
+
+    size_t len = MIN(asize, vec.len + 1);
+    snprintf(arena, len, "%s", vec.base);
+
+    nghttp3_rcbuf_decref(rcb);
+
+    return arena;
+} 
+#endif
+
 static int
-dissect_http3_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset)
+dissect_http3_headers(
+        tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint offset, guint64 length, http3_stream_info *h3_stream) { 
+#ifdef  HAVE_NGHTTP3
+
+    nghttp3_qpack_nv nv;
+
+    http3_session *h3_session = get_http3_session(pinfo);
+    nghttp3_qpack_stream_context *sctx = h3_stream->sctx;
+    nghttp3_qpack_decoder *decoder = h3_session->qpack_decoders[h3_stream->dir];
+
+    nghttp3_buf headers_data; 
+    // Get a coalesced copy of the TVB payload into the nghttp3 buffer 
+    headers_data.begin = tvb_memdup(wmem_file_scope(), tvb, offset, length);
+    headers_data.pos = headers_data.begin;
+    headers_data.end = headers_data.begin + length;
+    headers_data.last = headers_data.end;
+
+    int remaining;
+    while ((remaining = (int)nghttp3_buf_len(&headers_data)) > 0) { 
+
+        uint8_t decoding_flags;
+        nghttp3_ssize nread = nghttp3_qpack_decoder_read_request(
+                decoder, sctx, &nv, &decoding_flags, headers_data.pos, remaining, 1);
+
+        if (nread < 0) { 
+            proto_tree_add_expert_format(tree, pinfo, &ei_http3_header_failed, tvb, offset, remaining,
+                    "Failed to decode HTTP header dir=%d off=%d rem=%d nread=%lu",
+                    h3_stream->dir,
+                    offset,
+                    remaining,
+                    nread);
+            break;
+        } 
+  
+        if (decoding_flags & NGHTTP3_QPACK_DECODE_FLAG_BLOCKED) { 
+            proto_tree_add_expert_format(tree, pinfo, &ei_http3_header_failed, tvb, offset, remaining,
+                    "HTTP3 stream is blocked on QPACK update. Header value is lost. dir=%d off=%d rem=%d nread=%lu",
+                    h3_stream->dir,
+                    offset,
+                    remaining,
+                    nread);
+            
+        }  
+
+        if (decoding_flags & NGHTTP3_QPACK_DECODE_FLAG_EMIT) {  
+            const char* hdr_name = nghttp3_extract_str(nv.name, nghttp3_header_name_arena, sizeof(nghttp3_header_name_arena));
+            const char* hdr_value = nghttp3_extract_str(nv.value, nghttp3_header_value_arena, sizeof(nghttp3_header_value_arena));
+
+            proto_tree_add_expert_format(tree, pinfo, &ei_http3_header_nv, tvb, offset, remaining,
+                    "Successfully decoded HTTP header dir=%d off=%d rem=%d nread=%lu header=%s val=%s",
+                    h3_stream->dir,
+                    offset,
+                    remaining,
+                    nread,
+                    hdr_name,
+                    hdr_value);
+        }
+
+        if (decoding_flags & NGHTTP3_QPACK_DECODE_FLAG_FINAL) { 
+            break;
+        } 
+
+        if (nread == 0) { 
+            break;
+        } 
+
+        offset += nread;
+        headers_data.pos += nread;
+    } 
+#endif /* HAVE_NGHTTP3 */
+
+    return offset;
+} 
+
+static int
+dissect_http3_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, http3_stream_info *h3_stream)
 {
     guint64 frame_type, frame_length;
     int lenvar;
@@ -207,9 +310,16 @@ dissect_http3_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int off
     proto_tree_add_item_ret_varint(tree, hf_http3_frame_length, tvb, offset, -1, ENC_VARINT_QUIC, &frame_length, &lenvar);
     offset += lenvar;
 
+    
     if (frame_length) {
-        proto_tree_add_item(tree, hf_http3_frame_payload, tvb, offset, (int)frame_length, ENC_NA);
-        offset += (int)frame_length;
+        switch (frame_type) { 
+            case HTTP3_FRAME_TYPE_HEADERS:
+                dissect_http3_headers(tvb, pinfo, tree, offset, frame_length, h3_stream);
+
+            default:
+                proto_tree_add_item(tree, hf_http3_frame_payload, tvb, offset, (int)frame_length, ENC_NA);
+                offset += (int)frame_length;
+        }
     }
 
     return offset;
@@ -265,10 +375,9 @@ dissect_http3_uni_stream(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, in
                 gint remaining = tvb_captured_length_remaining(tvb, offset);
                     
                 if (remaining > 0) { 
-                    int direction = stream_info->from_server == 0 ? 0 : 1;
 
                     http3_session *h3_session = get_http3_session(pinfo);
-                    nghttp3_qpack_decoder *decoder = h3_session->qpack_decoders[direction];
+                    nghttp3_qpack_decoder *decoder = h3_session->qpack_decoders[h3_stream->dir];
                
                     // Get a coalesced copy of the TVB payload into the nghttp3 buffer 
                     const uint8_t *qpack_buf = tvb_memdup(wmem_file_scope(), tvb, offset, remaining);
@@ -279,14 +388,14 @@ dissect_http3_uni_stream(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, in
                     if (nread > 0) { 
                         proto_tree_add_expert_format(tree, pinfo, &ei_http3_qpack_enc_update, tvb, offset, remaining,
                                 "QPACK: successfully decoded encoder stream dir=%1d nread=%ld size=%d icnt=%llu",
-                                direction,
+                                h3_stream->dir,
                                 nread,
                                 remaining,
                                 icnt);
                     } else { 
                         proto_tree_add_expert_format(tree, pinfo, &ei_http3_qpack_failed, tvb, offset, 0,
                                 "QPACK: failed to decode dir=%1d nread=%ld size=%d icnt=%llu",
-                                direction,
+                                h3_stream->dir,
                                 nread,
                                 remaining,
                                 icnt);
@@ -418,6 +527,7 @@ dissect_http3(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
     h3_stream = (http3_stream_info *)quic_stream_get_proto_data(pinfo, stream_info);
     if (!h3_stream) {
         h3_stream = wmem_new0(wmem_file_scope(), http3_stream_info);
+        h3_stream->dir = stream_info->from_server == 0 ? DOWNSTREAM : UPSTREAM;
         quic_stream_add_proto_data(pinfo, stream_info, h3_stream);
 #ifdef HAVE_NGHTTP3
         nghttp3_qpack_stream_context_new(&h3_stream->sctx, stream_info->stream_id, nghttp3_mem_default());
@@ -452,7 +562,7 @@ dissect_http3(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
         if (!http3_check_frame_size(tvb, pinfo, offset)) {
             return tvb_captured_length(tvb);
         }
-        offset = dissect_http3_frame(tvb, pinfo, http3_tree, offset);
+        offset = dissect_http3_frame(tvb, pinfo, http3_tree, offset, h3_stream);
     }
 
     return tvb_captured_length(tvb);
@@ -508,6 +618,14 @@ proto_register_http3(void)
         { &ei_http3_qpack_enc_update,
           { "http3.qpack_encoder_update", PI_UNDECODED, PI_WARN,
             "Decoded QPACK encoder stream", EXPFILL }
+        },
+        { &ei_http3_header_nv,
+          { "http3.header", PI_UNDECODED, PI_WARN,
+            "Decoded HTTP3 header name/value", EXPFILL }
+        },
+        { &ei_http3_header_failed ,
+          { "http3.header_failed", PI_UNDECODED, PI_WARN,
+            "Failed to decode HTTP3 header name/value", EXPFILL }
         },
     };
 
