@@ -42,7 +42,7 @@ install_nghttp3() {
         make $MAKE_BUILD_OPTS || exit 1
         $DO_MAKE_INSTALL || exit 1
         cd ..
-        touch nghttp3-$NGHTTP2_VERSION-done
+        touch nghttp3-$NGHTTP3_VERSION-done
     fi
 }
 

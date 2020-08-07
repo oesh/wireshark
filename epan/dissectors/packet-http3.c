@@ -260,12 +260,10 @@ static http3_header_t* decode_nghttp3_header(nghttp3_qpack_nv *nv, size_t enc_le
     // TODO: cache the pstr
     return out;
 } 
-#endif
 
 static int
 dissect_http3_headers(
         tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint offset, guint64 length, http3_stream_info *h3_stream) {
-#ifdef  HAVE_NGHTTP3
 
     tvbuff_t *dec_headers_block_tvb = tvb_new_composite();
 
@@ -408,10 +406,9 @@ dissect_http3_headers(
         hoffset += header_value_length;
     }
 
-#endif /* HAVE_NGHTTP3 */
-
     return offset;
 }
+#endif /* HAVE_NGHTTP3 */
 
 static int
 dissect_http3_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset, http3_stream_info *h3_stream)
@@ -433,13 +430,15 @@ dissect_http3_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int off
 
     if (frame_length) {
         switch (frame_type) {
+#ifdef HAVE_NGHTTP3
             case HTTP3_FRAME_TYPE_HEADERS:
                 dissect_http3_headers(tvb, pinfo, tree, offset, frame_length, h3_stream);
-
+                break;
+#endif
             default:
                 proto_tree_add_item(tree, hf_http3_frame_payload, tvb, offset, (int)frame_length, ENC_NA);
-                offset += (int)frame_length;
         }
+        offset += (int)frame_length;
     }
 
     return offset;
