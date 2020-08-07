@@ -23,6 +23,8 @@ jobs:
           ruby-version: '2.6'
       - name: Install deps
         run: ./tools/macos-setup-brew.sh
+      - name: Install nghttp3
+        run: ./tools/macos-install-nghttp3.sh
       - name: Install asciidoctor
         run: gem install asciidoctor
       - name: Mkdir
