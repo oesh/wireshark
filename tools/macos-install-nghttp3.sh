@@ -39,7 +39,9 @@ install_nghttp3() {
         unzip $NGHTTP3_VERSION.zip || exit 1
         cd nghttp3-$NGHTTP3_VERSION
         CFLAGS="$CFLAGS $VERSION_MIN_FLAGS $SDKFLAGS" CXXFLAGS="$CXXFLAGS $VERSION_MIN_FLAGS $SDKFLAGS" LDFLAGS="$LDFLAGS $VERSION_MIN_FLAGS $SDKFLAGS" cmake -G 'Unix Makefiles'|| exit 1
+        echo "Building with \"make $MAKE_BUILD_OPTS\""
         make $MAKE_BUILD_OPTS || exit 1
+        echo "Installing with \"$DO_MAKE_INSTALL\""
         $DO_MAKE_INSTALL || exit 1
         cd ..
         touch nghttp3-$NGHTTP3_VERSION-done
