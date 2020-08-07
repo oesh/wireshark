@@ -428,6 +428,9 @@ dissect_http3_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int off
     proto_tree_add_item_ret_varint(tree, hf_http3_frame_length, tvb, offset, -1, ENC_VARINT_QUIC, &frame_length, &lenvar);
     offset += lenvar;
 
+    // silence warnings
+    (void)h3_stream;
+
     if (frame_length) {
         switch (frame_type) {
 #ifdef HAVE_NGHTTP3
