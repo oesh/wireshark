@@ -63,6 +63,7 @@ before_install:
   - echo $TRAVIS_OS_NAME
   # macos
   - if [ "$TRAVIS_OS_NAME" == "osx" ]; then ./tools/macos-setup-brew.sh; fi
+  - if [ "$TRAVIS_OS_NAME" == "osx" ]; then ./tools/macos-install-nghttp3.sh; fi
   - if [ "$TRAVIS_OS_NAME" == "osx" ]; then brew install softhsm; fi
   - if [ "$TRAVIS_OS_NAME" == "osx" ]; then sed s/access_bpf/staff/ packaging/macosx/ChmodBPF/ChmodBPF | sudo bash; fi
   # Required to fix an issue on macOS 10.14. Remove it as soon as Travis moves to 10.15.
